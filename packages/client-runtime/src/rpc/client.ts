@@ -21,7 +21,7 @@ import * as EnvironmentSupervisor from "../connection/supervisor.ts";
 import type { WsRpcProtocolClient } from "../rpc/protocol.ts";
 import type { RpcSession } from "../rpc/session.ts";
 import { clientAttestation, normalizeAttestationOrigin } from "../attestation/gate.ts";
-import { requiresClientAttestation } from "../attestation/commands.ts";
+import { clientAttestationThreadId, requiresClientAttestation } from "../attestation/commands.ts";
 
 export class EnvironmentRpcUnavailableError extends Schema.TaggedError<EnvironmentRpcUnavailableError>()(
   "EnvironmentRpcUnavailableError",
@@ -197,15 +197,26 @@ const authorizeRequest = Effect.fn("EnvironmentRpc.authorize")(function* (
         environmentId: supervisor.target.environmentId,
         message: "Connect and verify this environment before sending.",
       });
-    yield* Effect.tryPromise({
+    const authorization = yield* Effect.tryPromise({
       try: () =>
-        clientAttestation.authorize(normalizeAttestationOrigin(prepared.value.httpBaseUrl)),
+        clientAttestation.authorizeWithOverride(
+          normalizeAttestationOrigin(prepared.value.httpBaseUrl),
+          clientAttestationThreadId(input),
+        ),
       catch: (error) =>
         new EnvironmentRpcUnavailableError({
           environmentId: supervisor.target.environmentId,
           message: error instanceof Error ? error.message : "Device verification is required.",
         }),
     });
+    if (!authorization.allowed) {
+      return yield* new EnvironmentRpcUnavailableError({
+        environmentId: supervisor.target.environmentId,
+        message: authorization.requiresOverride
+          ? "This environment was not attested. Confirm sending in the composer."
+          : authorization.status.message,
+      });
+    }
   }
 });
 

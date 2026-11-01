@@ -11,7 +11,7 @@ import * as Fiber from "effect/Fiber";
 import * as Option from "effect/Option";
 import * as Stream from "effect/Stream";
 import * as SubscriptionRef from "effect/SubscriptionRef";
-import { clientAttestation } from "../attestation/gate.ts";
+import { clientAttestation, unavailableAttestation } from "../attestation/gate.ts";
 import {
   PrimaryConnectionTarget,
   type PreparedConnection,
@@ -77,11 +77,16 @@ const fixture = Effect.gen(function* () {
 it.effect("does not dispatch when device verification fails", () =>
   Effect.gen(function* () {
     const test = yield* fixture;
-    using _verify = vi
-      .spyOn(clientAttestation, "authorize")
-      .mockRejectedValue(new Error("Attestation failed"));
+    using _verify = vi.spyOn(clientAttestation, "authorizeWithOverride").mockResolvedValue({
+      allowed: false,
+      requiresOverride: true,
+      status: unavailableAttestation("https://vm.example", "Attestation failed"),
+    });
     const error = yield* Effect.flip(test.execute);
     expect(error._tag).toBe("EnvironmentRpcUnavailableError");
+    expect(error.message).toBe(
+      "This environment was not attested. Confirm sending in the composer.",
+    );
     expect(test.sends()).toBe(0);
   }),
 );
@@ -90,14 +95,18 @@ it.effect("does not send on a connection replaced during verification", () =>
   Effect.gen(function* () {
     const test = yield* fixture;
     let markEntered = () => {};
-    let release = () => {};
+    let release: (
+      value: Awaited<ReturnType<typeof clientAttestation.authorizeWithOverride>>,
+    ) => void = () => {};
     const entered = new Promise<void>((resolve) => {
       markEntered = resolve;
     });
-    const allowed = new Promise<void>((resolve) => {
+    const allowed = new Promise<
+      Awaited<ReturnType<typeof clientAttestation.authorizeWithOverride>>
+    >((resolve) => {
       release = resolve;
     });
-    using _verify = vi.spyOn(clientAttestation, "authorize").mockImplementation(() => {
+    using _verify = vi.spyOn(clientAttestation, "authorizeWithOverride").mockImplementation(() => {
       markEntered();
       return allowed;
     });
@@ -107,7 +116,11 @@ it.effect("does not send on a connection replaced during verification", () =>
       test.supervisor.prepared,
       Option.some({ ...test.connection, httpBaseUrl: "https://other.example" }),
     );
-    release();
+    release({
+      allowed: true,
+      requiresOverride: false,
+      status: unavailableAttestation("https://vm.example"),
+    });
     const error = yield* Effect.flip(Fiber.join(sending));
     expect(error._tag).toBe("EnvironmentRpcUnavailableError");
     expect(test.sends()).toBe(0);
@@ -117,8 +130,14 @@ it.effect("does not send on a connection replaced during verification", () =>
 it.effect("dispatches once after verification on the unchanged connection", () =>
   Effect.gen(function* () {
     const test = yield* fixture;
-    using _verify = vi.spyOn(clientAttestation, "authorize").mockResolvedValue(undefined);
+    const authorize = vi.spyOn(clientAttestation, "authorizeWithOverride").mockResolvedValue({
+      allowed: true,
+      requiresOverride: false,
+      status: unavailableAttestation("https://vm.example"),
+    });
+    using _verify = authorize;
     yield* test.execute;
+    expect(authorize).toHaveBeenCalledWith("https://vm.example", "test-thread");
     expect(test.sends()).toBe(1);
   }),
 );

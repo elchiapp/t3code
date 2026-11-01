@@ -63,21 +63,23 @@ export function AttestationIndicator({
 }) {
   const pending = status.phase === "checking";
   const complete = canSend && checks.every(([key]) => status.checks[key]?.state === "verified");
-  const label = canSend
-    ? complete
+  const expired = status.phase === "verified" && !canSend;
+  const state = expired ? "expired" : canSend && !complete ? "partial" : status.phase;
+  const label = pending
+    ? "Verifying connection"
+    : complete
       ? "Attestation verified"
-      : "Attestation incomplete"
-    : pending
-      ? "Verifying connection"
-      : status.phase === "unavailable"
-        ? "Verification unavailable"
-        : status.phase === "expired"
+      : canSend
+        ? "Attestation incomplete"
+        : expired || status.phase === "expired"
           ? "Verification expired"
-          : "Verification failed";
+          : status.phase === "unavailable"
+            ? "Verification unavailable"
+            : "Verification failed";
   return (
     <div
       className="flex h-6 items-center px-1 text-xs text-muted-foreground"
-      data-attestation-state={canSend && !complete ? "partial" : status.phase}
+      data-attestation-state={state}
     >
       <Popover>
         <PopoverTrigger

@@ -94,7 +94,7 @@ export function createDesktopVerifier(services: {
             "failed",
             proof.checks.inference?.state === "approval_required"
               ? "Tinfoil release approval is required."
-              : "Attestation failed. New messages are blocked.",
+              : "Attestation failed. Sending requires an explicit override.",
           ),
           checks: proof.checks,
         };
@@ -130,7 +130,10 @@ export function createDesktopVerifier(services: {
         },
       };
     } catch {
-      return failed("failed", "Device verification is unavailable. New messages are blocked.");
+      return failed(
+        "failed",
+        "Device verification is unavailable. Sending requires an explicit override.",
+      );
     }
   };
 }

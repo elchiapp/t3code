@@ -42,3 +42,9 @@ export function requiresClientAttestation(method: string, input: unknown): boole
     return true;
   return !stopCommands.has(input.type) && !metadataCommands.has(input.type);
 }
+
+export function clientAttestationThreadId(input: unknown): string | null {
+  if (typeof input !== "object" || input === null || !("threadId" in input)) return null;
+  const threadId = (input as { threadId?: unknown }).threadId;
+  return typeof threadId === "string" && threadId !== "" ? threadId : null;
+}

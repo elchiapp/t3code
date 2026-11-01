@@ -32,8 +32,15 @@ interface Entry {
   timer: AbortController | undefined;
 }
 
+export interface AttestationAuthorization {
+  readonly status: AttestationStatus;
+  readonly allowed: boolean;
+  readonly requiresOverride: boolean;
+}
+
 export class ClientAttestationGate {
   private readonly entries = new Map<string, Entry>();
+  private readonly overriddenThreads = new Map<string, Set<string>>();
   private verify: (request: AttestationRequest) => Promise<AttestationStatus>;
   private generation = 0;
   private readonly now: () => number;
@@ -106,6 +113,22 @@ export class ClientAttestationGate {
     );
   }
 
+  hasOverride(origin: string, threadId: string): boolean {
+    return this.overriddenThreads.get(origin)?.has(threadId) === true;
+  }
+
+  override(origin: string, threadId: string): void {
+    if (threadId === "") return;
+    const entry = this.entry(origin);
+    let threads = this.overriddenThreads.get(origin);
+    if (!threads) {
+      threads = new Set();
+      this.overriddenThreads.set(origin, threads);
+    }
+    threads.add(threadId);
+    this.emit(entry);
+  }
+
   private emit(entry: Entry) {
     for (const listener of entry.listeners) listener();
   }
@@ -167,8 +190,20 @@ export class ClientAttestationGate {
   }
 
   async authorize(origin: string): Promise<void> {
+    const authorization = await this.authorizeWithOverride(origin, null);
+    if (!authorization.allowed) throw new Error(authorization.status.message);
+  }
+
+  async authorizeWithOverride(
+    origin: string,
+    threadId: string | null,
+  ): Promise<AttestationAuthorization> {
     await this.refresh(origin, false);
-    if (!this.canSend(origin)) throw new Error(this.get(origin).message);
+    const status = this.get(origin);
+    const allowed =
+      this.canSend(origin) ||
+      (threadId !== null && threadId !== "" && this.hasOverride(origin, threadId));
+    return { status, allowed, requiresOverride: !allowed };
   }
 
   private schedule(origin: string, entry: Entry) {
@@ -207,7 +242,7 @@ export const clientAttestation = new ClientAttestationGate(async (request) => {
   if (!bridge?.getAttestationStatus)
     return unavailableAttestation(
       request.origin,
-      "This client has no trusted device verifier. Chat is disabled.",
+      "This client has no trusted device verifier. Sending requires an explicit override.",
     );
   return bridge.getAttestationStatus(request);
 });

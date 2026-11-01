@@ -235,6 +235,7 @@ const isEnvironmentRequestInvalidError = Schema.is(EnvironmentRequestInvalidErro
 const COMPOSER_SCROLL_COLLAPSE_THRESHOLD_PX = 24;
 const COMPOSER_SCROLL_GESTURE_RESET_MS = 120;
 import { toastManager } from "../ui/toast";
+import { Button } from "../ui/button";
 import { PlayIcon, ShieldIcon } from "lucide-react";
 import { proposedPlanTitle } from "@t3tools/shared/proposedPlanText";
 import { hasProviderSetup } from "./ProviderStatusBanner";
@@ -969,9 +970,14 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     selectedProviderEntry?.snapshot,
     selectedModel,
   );
-  const attestation = useAttestation(environmentId);
+  const attestation = useAttestation(environmentId, activeThreadId);
+  const [pendingAttestationSubmission, setPendingAttestationSubmission] = useState<{
+    environmentId: EnvironmentId;
+    threadId: ThreadId;
+    dispatchMode?: ComposerDispatchMode;
+    submissionIntent?: ComposerSubmissionIntent;
+  } | null>(null);
   const sendDisabledReason =
-    (!attestation.canSend ? attestation.status.message : null) ??
     externalSendDisabledReason ??
     (multipleModelSelections?.length === 0 ? "Select at least one model." : null) ??
     (activePendingProgress
@@ -2092,6 +2098,14 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
       !readEnvironmentScope(environmentId, AuthOrchestrationOperateScope)
     ) {
       event?.preventDefault();
+      if (activeThreadId !== null && attestation.requiresOverride) {
+        setPendingAttestationSubmission({
+          environmentId,
+          threadId: activeThreadId,
+          dispatchMode,
+          submissionIntent,
+        });
+      }
       return;
     }
     // A send while a pasted image is still compressing would strand that image:
@@ -2156,6 +2170,20 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     );
   };
   const handleSubmitMessageStable = useStableCallback(handleSubmitMessage);
+  const submitWithAttestationOverride = () => {
+    if (
+      pendingAttestationSubmission === null ||
+      pendingAttestationSubmission.environmentId !== environmentId ||
+      pendingAttestationSubmission.threadId !== activeThreadId
+    ) {
+      return;
+    }
+    attestation.override();
+    const submission = pendingAttestationSubmission;
+    setPendingAttestationSubmission(null);
+    submitComposer(undefined, submission.dispatchMode, submission.submissionIntent);
+  };
+  const cancelAttestationOverride = () => setPendingAttestationSubmission(null);
   const submitCitationAndSend = () => {
     submitComposer(
       undefined,
@@ -3392,6 +3420,25 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
         canSend={attestation.canSend}
         onRetry={attestation.retry}
       />
+      {pendingAttestationSubmission !== null &&
+      pendingAttestationSubmission.environmentId === environmentId &&
+      pendingAttestationSubmission.threadId === activeThreadId &&
+      attestation.requiresOverride ? (
+        <div
+          className="mb-2 flex flex-wrap items-center justify-between gap-2 rounded-md border border-warning/40 bg-warning/10 px-3 py-2 text-xs"
+          data-attestation-override-prompt="true"
+        >
+          <p>This environment was not attested. Send anyway?</p>
+          <div className="flex items-center gap-2">
+            <Button size="sm" variant="outline" onClick={cancelAttestationOverride}>
+              Cancel
+            </Button>
+            <Button size="sm" onClick={submitWithAttestationOverride}>
+              Send anyway
+            </Button>
+          </div>
+        </div>
+      ) : null}
       {composerControlsCollapsed && restingControlsHost
         ? createPortal(
             <div
@@ -3701,7 +3748,6 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
                                 : DEFAULT_COMPOSER_PLACEHOLDER
                     }
                     disabled={
-                      !attestation.canSend ||
                       isConnecting ||
                       projectSelectionRequired ||
                       isChoiceOnlyPendingQuestion ||

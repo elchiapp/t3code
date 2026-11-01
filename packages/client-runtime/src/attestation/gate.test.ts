@@ -64,6 +64,7 @@ describe("client attestation gate", () => {
     await expect(delivery).rejects.toThrow("unavailable");
     expect(gate.canSend(origin)).toBe(false);
   });
+
   it("coalesces a send requested synchronously by a status subscriber", async () => {
     let calls = 0;
     const gate = make(async () => {
@@ -82,25 +83,39 @@ describe("client attestation gate", () => {
       unsubscribe();
     }
   });
-  it("blocks before verification and when the verifier is absent", async () => {
+
+  it("blocks legacy authorization before verification and when the verifier is absent", async () => {
     const gate = make(async () => unavailableAttestation(origin));
     expect(gate.canSend(origin)).toBe(false);
     await expect(gate.authorize(origin)).rejects.toThrow("unavailable");
   });
+
+  it("returns an override request instead of throwing for a thread", async () => {
+    const gate = make(async () => unavailableAttestation(origin));
+    const authorization = await gate.authorizeWithOverride(origin, "thread-1");
+    expect(authorization.allowed).toBe(false);
+    expect(authorization.requiresOverride).toBe(true);
+    expect(authorization.status.phase).toBe("unavailable");
+  });
+
   it("requires every proof rather than a verified flag", async () => {
     const gate = make(async () => ({ ...good(), checks: {} }));
     await expect(gate.authorize(origin)).rejects.toThrow("fresh device verification");
+    expect((await gate.authorizeWithOverride(origin, "thread-1")).requiresOverride).toBe(true);
   });
+
   it("refuses evidence for a different environment", async () => {
     const gate = make(async () => ({ ...good(), origin: "https://other.example" }));
     await expect(gate.authorize(origin)).rejects.toThrow("another environment");
   });
+
   it("does not reuse one environment's permission for another", async () => {
     const gate = make(async () => good());
     await gate.authorize(origin);
     expect(gate.canSend(origin)).toBe(true);
     expect(gate.canSend("https://other.example")).toBe(false);
   });
+
   it("closes on expiry and refuses a failed renewal", async () => {
     let now = 0;
     const gate = new ClientAttestationGate(
@@ -113,6 +128,7 @@ describe("client attestation gate", () => {
     expect(gate.canSend(origin)).toBe(false);
     await expect(gate.authorize(origin)).rejects.toThrow("unavailable");
   });
+
   it("clock rollback cannot extend the monotonic lease", async () => {
     let wall = 0;
     let monotonic = 0;
@@ -126,6 +142,7 @@ describe("client attestation gate", () => {
     monotonic = 60_001;
     expect(gate.canSend(origin)).toBe(false);
   });
+
   it("does not extend a short lease when the wall clock moves backwards", async () => {
     let wall = 0;
     let monotonic = 0;
@@ -139,6 +156,7 @@ describe("client attestation gate", () => {
     monotonic = 1_001;
     expect(gate.canSend(origin)).toBe(false);
   });
+
   it("rechecks the device verifier before every delivery, even with a cached lease", async () => {
     let healthy = true;
     const gate = make(async () => (healthy ? good() : unavailableAttestation(origin)));
@@ -147,6 +165,7 @@ describe("client attestation gate", () => {
     await expect(gate.authorize(origin)).rejects.toThrow("unavailable");
     expect(gate.canSend(origin)).toBe(false);
   });
+
   it("shares one pending verification and permits no send before it resolves", async () => {
     let finish: (value: AttestationStatus) => void = () => {};
     let calls = 0;
@@ -156,13 +175,37 @@ describe("client attestation gate", () => {
         finish = resolve;
       });
     });
-    const a = gate.authorize(origin);
-    const b = gate.authorize(origin);
+    const firstDelivery = gate.authorize(origin);
+    const secondDelivery = gate.authorize(origin);
     expect(gate.canSend(origin)).toBe(false);
     await Promise.resolve();
     finish(good());
-    await Promise.all([a, b]);
+    await Promise.all([firstDelivery, secondDelivery]);
     expect(calls).toBe(1);
     expect(gate.canSend(origin)).toBe(true);
+  });
+
+  it("remembers a send override per thread and asks again in a new thread", async () => {
+    const gate = make(async () => unavailableAttestation(origin));
+    const initial = await gate.authorizeWithOverride(origin, "thread-1");
+    expect(initial.requiresOverride).toBe(true);
+
+    gate.override(origin, "thread-1");
+    const overridden = await gate.authorizeWithOverride(origin, "thread-1");
+    expect(overridden.allowed).toBe(true);
+    expect(overridden.requiresOverride).toBe(false);
+    expect(overridden.status.phase).toBe("unavailable");
+
+    const newThread = await gate.authorizeWithOverride(origin, "thread-2");
+    expect(newThread.allowed).toBe(false);
+    expect(newThread.requiresOverride).toBe(true);
+  });
+
+  it("never asks for an override when verification succeeded", async () => {
+    const gate = make(async () => good());
+    const authorization = await gate.authorizeWithOverride(origin, "thread-1");
+    expect(authorization.allowed).toBe(true);
+    expect(authorization.requiresOverride).toBe(false);
+    expect(authorization.status.phase).toBe("verified");
   });
 });

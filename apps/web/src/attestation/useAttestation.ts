@@ -1,6 +1,6 @@
-import type { EnvironmentId } from "@t3tools/contracts";
+import type { EnvironmentId, ThreadId } from "@t3tools/contracts";
 import { useEnvironmentHttpBaseUrl } from "../state/environments";
 import { useOriginAttestation } from "./useOriginAttestation";
-export function useAttestation(environmentId: EnvironmentId) {
-  return useOriginAttestation(useEnvironmentHttpBaseUrl(environmentId));
+export function useAttestation(environmentId: EnvironmentId, threadId: ThreadId | null) {
+  return useOriginAttestation(useEnvironmentHttpBaseUrl(environmentId), threadId);
 }

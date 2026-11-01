@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vite-plus/test";
 import { ORCHESTRATION_V2_WS_METHODS, WS_METHODS } from "@t3tools/contracts";
-import { requiresClientAttestation } from "./commands.ts";
+import { clientAttestationThreadId, requiresClientAttestation } from "./commands.ts";
 
 describe("attestation write boundary", () => {
   it.each([
@@ -34,5 +34,15 @@ describe("attestation write boundary", () => {
   });
   it("does not block ordinary reads", () => {
     expect(requiresClientAttestation(WS_METHODS.serverGetConfig, {})).toBe(false);
+  });
+  it("scopes an attestation override to the command thread", () => {
+    expect(
+      clientAttestationThreadId({
+        type: "message.dispatch",
+        threadId: "thread-1",
+      }),
+    ).toBe("thread-1");
+    expect(clientAttestationThreadId({ type: "future.write" })).toBe(null);
+    expect(clientAttestationThreadId(WS_METHODS.attachmentsCreateUploadUrl)).toBe(null);
   });
 });

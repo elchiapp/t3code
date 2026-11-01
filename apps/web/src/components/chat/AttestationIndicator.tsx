@@ -4,10 +4,26 @@ import { Button } from "../ui/button";
 import { cn } from "~/lib/utils";
 
 const checks = [
-  ["environment_connection", "Selected environment", ""],
-  ["hardware", "VM hardware", ""],
-  ["tls_key_commitment", "Connection key", ""],
-  ["inference", "Tinfoil release", ""],
+  [
+    "environment_connection",
+    "Selected environment",
+    "Checks the connection to the environment you paired with.",
+  ],
+  [
+    "hardware",
+    "VM hardware",
+    "Checks fresh hardware evidence against the approved VM launch and firmware policy.",
+  ],
+  [
+    "tls_key_commitment",
+    "Connection key",
+    "Checks that the VM hardware proof includes the key used for your encrypted VM connection.",
+  ],
+  [
+    "inference",
+    "Tinfoil release",
+    "Independently checks Tinfoil's hardware evidence, encryption keys and approved software release.",
+  ],
   ["proxy_workload", "VM software", "No accepted measurement of the software running on the VM."],
   [
     "key_custody",
@@ -98,13 +114,14 @@ export function AttestationIndicator({
                 : status.message}
             </p>
             <dl className="space-y-1">
-              {checks.map(([key, title, fallbackDetail]) => (
+              {checks.map(([key, title, explanation]) => (
                 <div key={key} className="grid grid-cols-[1fr_auto] gap-x-4 gap-y-1">
                   <dt>{title}</dt>
                   <dd>{checkLabel(status.checks[key]?.state)}</dd>
-                  {(status.checks[key]?.detail || fallbackDetail) && (
+                  <dd className="col-span-2 text-muted-foreground">{explanation}</dd>
+                  {status.checks[key]?.detail && (
                     <dd className="col-span-2 text-muted-foreground">
-                      {status.checks[key]?.detail || fallbackDetail}
+                      {status.checks[key].detail}
                     </dd>
                   )}
                 </div>

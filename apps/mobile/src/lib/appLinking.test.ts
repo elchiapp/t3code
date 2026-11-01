@@ -3,12 +3,16 @@ import { describe, expect, it } from "vite-plus/test";
 import { findLinkedRoute, restoreDraftLinkState, shouldHandleAppLink } from "./appLinking";
 
 describe("shouldHandleAppLink", () => {
-  it.each(["t3code://", "t3code:///", "t3code-dev://", "t3code-preview://"])(
-    "ignores scheme-only URL %s",
-    (url) => {
-      expect(shouldHandleAppLink(url, true)).toBe(false);
-    },
-  );
+  it.each([
+    "t3code://",
+    "t3code:///",
+    "t3code-dev://",
+    "t3code-preview://",
+    "t3attested://",
+    "t3attested-dev://",
+  ])("ignores scheme-only URL %s", (url) => {
+    expect(shouldHandleAppLink(url, true)).toBe(false);
+  });
 
   it.each([
     "t3code://threads/env-1/thread-1",

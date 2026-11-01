@@ -1,0 +1,13 @@
+apply plugin: 'com.android.library'
+apply plugin: 'org.jetbrains.kotlin.android'
+group = 'io.elchiapp.t3attestation'
+version = '1.0.0'
+android {
+  namespace 'expo.modules.t3attestation'
+  compileSdk rootProject.ext.compileSdkVersion
+  defaultConfig { minSdkVersion rootProject.ext.minSdkVersion }
+}
+dependencies {
+  implementation project(':expo-modules-core')
+  implementation 'com.facebook.react:react-android'
+}

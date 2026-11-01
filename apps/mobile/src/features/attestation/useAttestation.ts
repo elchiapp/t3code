@@ -7,6 +7,7 @@ import {
   unavailableAttestation,
 } from "@t3tools/client-runtime/attestation";
 import { usePreparedConnection } from "../../state/session";
+import { retryVerifierHost } from "./hostLifecycle";
 
 const noEnvironment = unavailableAttestation("", "Connect an environment to verify it.");
 
@@ -30,5 +31,8 @@ export function useAttestation(environmentId: EnvironmentId) {
     status,
     canSend: origin !== "" && status.phase === "verified",
     isCurrent: () => origin !== "" && clientAttestation.canSend(origin),
+    retry: () => {
+      if (!retryVerifierHost() && origin) void clientAttestation.refresh(origin);
+    },
   };
 }

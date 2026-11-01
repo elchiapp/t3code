@@ -134,7 +134,7 @@ export const hashBundle = Effect.fn("hashBundle")(function* (root: string) {
 });
 type FileSystemError = import("effect/PlatformError").PlatformError;
 
-const bundleId = "com.t3tools.t3code.dev";
+const bundleId = "io.elchiapp.t3attested.dev";
 const roots = Effect.gen(function* () {
   const path = yield* Path.Path;
   const repo = yield* path.fromFileUrl(new URL("../", import.meta.url));
@@ -403,7 +403,7 @@ export const prebuildAndroid = Effect.fn("nativeClient.prebuildAndroid")(functio
   );
 });
 
-const artifactNames = { ios: "T3CodeDev.app", android: "app-debug.apk" } as const;
+const artifactNames = { ios: "T3AttestedDev.app", android: "app-debug.apk" } as const;
 // R2 requires equal-sized parts and Workers cap request bodies at 100 MB.
 const partSize = 64 * 1024 * 1024;
 const RemoteCredentials = Schema.fromJsonString(
@@ -707,7 +707,8 @@ const build = Effect.fn("nativeClient.build")(function* (
     if (onEas) {
       yield* buildIosOnEas(staging);
     } else if (platform === "ios") {
-      const output = yield* fs.makeTempDirectoryScoped({ prefix: "t3-native-client-" });
+      const output = path.join((yield* roots).repo, ".t3/native-build/ios");
+      yield* fs.makeDirectory(output, { recursive: true });
       yield* command("pod", ["install"], true, path.join(mobile, "ios"));
       // One device-independent arm64 simulator build installs on every iPhone and iPad simulator.
       yield* command(
@@ -715,9 +716,9 @@ const build = Effect.fn("nativeClient.build")(function* (
         [
           "xcodebuild",
           "-workspace",
-          path.join(mobile, "ios/T3CodeDev.xcworkspace"),
+          path.join(mobile, "ios/T3AttestedDev.xcworkspace"),
           "-scheme",
-          "T3CodeDev",
+          "T3AttestedDev",
           "-configuration",
           "Debug",
           "-destination",

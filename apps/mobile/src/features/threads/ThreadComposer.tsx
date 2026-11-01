@@ -1,4 +1,5 @@
 import { useAttestation } from "../attestation/useAttestation";
+import { AttestationIndicator } from "../attestation/AttestationIndicator";
 import { useSidebarWorkspaceTabs } from "../workspace/useSystemWorkspaceTabBar";
 import { Button } from "../../components/ui/Button";
 import * as Dialog from "../../components/ui/Dialog";
@@ -813,17 +814,11 @@ export const ThreadComposer = function ThreadComposer(props: ThreadComposerProps
         style={{ maxWidth: props.contentMaxWidth }}
       >
         {props.draftControls}
-        <Text
-          accessibilityRole="text"
-          accessibilityLiveRegion="polite"
-          className="px-1 pb-1 text-xs text-muted-foreground"
-        >
-          {attestation.canSend
-            ? "● Attestation verified"
-            : attestation.status.phase === "checking"
-              ? "● Verifying connection"
-              : "● Verification unavailable. Chat disabled."}
-        </Text>
+        <AttestationIndicator
+          status={attestation.status}
+          canSend={attestation.canSend}
+          retry={attestation.retry}
+        />
         {!isSubmissionLocked &&
         composerMenu.trigger &&
         (composerMenu.items.length > 0 || composerMenu.trigger.kind === "pull-request") ? (

@@ -34,7 +34,8 @@ interface Entry {
 
 export class ClientAttestationGate {
   private readonly entries = new Map<string, Entry>();
-  private readonly verify: (request: AttestationRequest) => Promise<AttestationStatus>;
+  private verify: (request: AttestationRequest) => Promise<AttestationStatus>;
+  private generation = 0;
   private readonly now: () => number;
   private readonly monotonic: () => number;
   constructor(
@@ -45,6 +46,22 @@ export class ClientAttestationGate {
     this.verify = verify;
     this.now = now;
     this.monotonic = monotonic;
+  }
+
+  setDeviceVerifier(verify: (request: AttestationRequest) => Promise<AttestationStatus>): void {
+    this.generation++;
+    this.verify = verify;
+    for (const [origin, entry] of this.entries) {
+      entry.timer?.abort();
+      entry.status = unavailableAttestation(
+        origin,
+        "Device verifier changed. Fresh verification is required.",
+      );
+      entry.deadline = 0;
+      entry.pending = undefined;
+      this.emit(entry);
+      this.schedule(origin, entry);
+    }
   }
 
   private entry(origin: string): Entry {
@@ -97,6 +114,7 @@ export class ClientAttestationGate {
     const entry = this.entry(origin);
     if (entry.pending) return entry.pending;
     const started = this.now();
+    const generation = this.generation;
     const monotonicStarted = this.monotonic();
     if (force || !this.canSend(origin)) {
       entry.status = { ...entry.status, phase: "checking", message: "Verifying connection…" };
@@ -105,6 +123,7 @@ export class ClientAttestationGate {
       await Promise.resolve();
       try {
         const status = await this.verify({ origin, refresh: force });
+        if (generation !== this.generation) return entry.status;
         if (status.origin !== origin)
           throw new Error("Verification belongs to another environment.");
         if (
@@ -124,6 +143,7 @@ export class ClientAttestationGate {
         entry.deadline =
           monotonicStarted + (expiresAt === null ? 0 : Math.max(0, expiresAt - started));
       } catch (error) {
+        if (generation !== this.generation) return entry.status;
         entry.status = {
           origin,
           phase: "failed",
@@ -134,9 +154,11 @@ export class ClientAttestationGate {
         };
         entry.deadline = 0;
       } finally {
-        entry.pending = undefined;
-        this.emit(entry);
-        this.schedule(origin, entry);
+        if (generation === this.generation) {
+          entry.pending = undefined;
+          this.emit(entry);
+          this.schedule(origin, entry);
+        }
       }
       return entry.status;
     })();

@@ -1,3 +1,4 @@
+import { VerifierHost } from "./features/attestation/VerifierHost";
 import { installPermissionUpdateNotice } from "./features/connection/permissionUpdateNotice";
 import { installComposerAttachmentUploads } from "./state/composer-attachment-uploads";
 import { installThreadOutboxDelivery } from "./state/threadOutboxDelivery";
@@ -66,7 +67,7 @@ void SplashScreen.preventAutoHideAsync().catch(() => {});
 void hydrateWorkspaceSelections();
 
 const appLinking = {
-  prefixes: [Linking.createURL("/"), "t3code://", "t3code-dev://", "t3code-preview://"],
+  prefixes: [Linking.createURL("/"), "t3attested://", "t3attested-dev://"],
   config: { initialRouteName: "Home" },
   filter: (url: string) => shouldHandleAppLink(url, hasCloudPublicConfig()),
   getInitialURL: async () => (await Linking.getInitialURL()) ?? (await launchWorkspaceURL()),
@@ -147,6 +148,7 @@ function AppContent() {
       <SplashScreenCoordinator />
       <SubscriptionUsageCoordinator />
       <GestureHandlerRootView className="flex-1">
+        <VerifierHost />
         <KeyboardProvider statusBarTranslucent>
           <SafeAreaProvider>
             <StatusBar barStyle={themeAppearance === "dark" ? "light-content" : "dark-content"} />

@@ -1,0 +1,5 @@
+{
+  "platforms": ["apple", "android"],
+  "apple": { "modules": ["T3AttestationModule"] },
+  "android": { "modules": ["expo.modules.t3attestation.T3AttestationModule"] }
+}

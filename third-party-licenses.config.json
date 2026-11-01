@@ -226,6 +226,13 @@
           ]
         }
       ]
+    },
+    {
+      "name": "T3 mobile attestation verifier",
+      "bundles": ["mobile"],
+      "license": "Apache-2.0 AND MIT",
+      "sourceUrl": "https://github.com/tinfoilsh/tinfoil-js/tree/35ef04e9a74f1c35b13d09d844cbbd70329e449c",
+      "noticeFile": "integrations/confidential-vm/mobile/THIRD-PARTY-NOTICES.txt"
     }
   ],
   "packageOverrides": [
@@ -321,7 +328,9 @@
       "version": "0.4.0",
       "license": "Apache-2.0 AND OFL-1.1",
       "generatedNotices": [
-        { "licenseId": "Apache-2.0" },
+        {
+          "licenseId": "Apache-2.0"
+        },
         {
           "licenseId": "OFL-1.1",
           "copyrights": [

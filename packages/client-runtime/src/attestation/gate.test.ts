@@ -24,6 +24,28 @@ const make = (verify: ConstructorParameters<typeof ClientAttestationGate>[0]) =>
   );
 
 describe("client attestation gate", () => {
+  it("does not accept a receipt from a verifier replaced while it was running", async () => {
+    let finish: (status: AttestationStatus) => void = () => {};
+    const gate = make(
+      () =>
+        new Promise((resolve) => {
+          finish = resolve;
+        }),
+    );
+    const delivery = gate.authorize(origin);
+    await Promise.resolve();
+    gate.setDeviceVerifier(async () => unavailableAttestation(origin));
+    finish(good());
+    await expect(delivery).rejects.toThrow("Fresh verification");
+    expect(gate.canSend(origin)).toBe(false);
+  });
+  it("closes an existing lease when the device verifier is removed", async () => {
+    const gate = make(async () => good());
+    await gate.authorize(origin);
+    gate.setDeviceVerifier(async () => unavailableAttestation(origin));
+    expect(gate.canSend(origin)).toBe(false);
+    await expect(gate.authorize(origin)).rejects.toThrow("unavailable");
+  });
   it("keeps a current lease visible during background checking but waits before dispatch", async () => {
     let calls = 0;
     let finish: (status: AttestationStatus) => void = () => {};

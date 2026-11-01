@@ -71,26 +71,26 @@ const RELEASE_ASSETS = {
 
 const VARIANT_CONFIG = {
   development: {
-    appName: "T3 Code Dev",
-    scheme: "t3code-dev",
-    iosBundleIdentifier: "com.t3tools.t3code.dev",
-    androidPackage: "com.t3tools.t3code.dev",
+    appName: "T3 Attested Dev",
+    scheme: "t3attested-dev",
+    iosBundleIdentifier: "io.elchiapp.t3attested.dev",
+    androidPackage: "io.elchiapp.t3attested.dev",
     relyingParty: "clerk.t3.codes",
     assets: DEVELOPMENT_ASSETS,
   },
   preview: {
-    appName: "T3 Code Preview",
-    scheme: "t3code-preview",
-    iosBundleIdentifier: "com.t3tools.t3code.preview",
-    androidPackage: "com.t3tools.t3code.preview",
+    appName: "T3 Attested Preview",
+    scheme: "t3attested-preview",
+    iosBundleIdentifier: "io.elchiapp.t3attested.preview",
+    androidPackage: "io.elchiapp.t3attested.preview",
     relyingParty: "clerk.t3.codes",
     assets: PREVIEW_ASSETS,
   },
   production: {
-    appName: "T3 Code",
-    scheme: "t3code",
-    iosBundleIdentifier: "com.t3tools.t3code",
-    androidPackage: "com.t3tools.t3code",
+    appName: "T3 Attested",
+    scheme: "t3attested",
+    iosBundleIdentifier: "io.elchiapp.t3attested",
+    androidPackage: "io.elchiapp.t3attested",
     relyingParty: "clerk.t3.codes",
     assets: RELEASE_ASSETS,
   },
@@ -220,7 +220,7 @@ const config: ExpoConfig = {
   slug: "t3-code",
   platforms: ["ios", "android"],
   scheme: variant.scheme,
-  version: repoEnv.T3CODE_MOBILE_VERSION ?? "2.1.0",
+  version: repoEnv.T3CODE_MOBILE_VERSION ?? "0.1.0",
   runtimeVersion: {
     // Skip costly fingerprinting on dev launches; preview and production OTAs require matching native projects.
     policy: runtimeVersionPolicy,
@@ -239,8 +239,7 @@ const config: ExpoConfig = {
     supportsTablet: true,
     requireFullScreen: process.env.T3_SHOWCASE_CAPTURE_BUILD === "1",
     bundleIdentifier: iosBundleIdentifier,
-    // Avoid Personal Team fallback: it cannot sign App Groups, Apple sign-in or push entitlements.
-    appleTeamId: "ARK85ZXQ4Z",
+    appleTeamId: repoEnv.T3CODE_IOS_TEAM_ID?.trim() || undefined,
     associatedDomains: [
       `applinks:${variant.relyingParty}`,
       `webcredentials:${variant.relyingParty}`,
@@ -459,4 +458,20 @@ const config: ExpoConfig = {
   },
 };
 
+// This fork uses its own app identity. Upstream update and cloud channels are not trusted inputs.
+config.slug = "t3-attested";
+config.owner = undefined;
+config.ios = {
+  ...config.ios,
+  associatedDomains: [],
+};
+config.updates = { enabled: false };
+config.extra = {
+  ...config.extra,
+  eas: undefined,
+  relay: { url: null },
+  clerk: { publishableKey: null, jwtTemplate: null },
+  observability: { tracesUrl: null, tracesDataset: null, tracesToken: null },
+};
+config.plugins = [...(config.plugins ?? []), "./plugins/withDeviceAttestation.cjs"];
 export default config;

@@ -1,6 +1,7 @@
 import { EnvironmentId, PROVIDER_SEND_TURN_MAX_IMAGE_BYTES } from "@t3tools/contracts";
 import * as Option from "effect/Option";
 import { beforeEach, describe, expect, it, vi } from "vite-plus/test";
+import { clientAttestation } from "@t3tools/client-runtime/attestation";
 
 const mocks = vi.hoisted(() => ({
   canOperate: true,
@@ -736,6 +737,27 @@ describe("prepareTurnAttachments", () => {
     expect(mocks.deleteFile).not.toHaveBeenCalled();
     expect(removeCallsFor(MINTED_ID)).toBe(1);
   });
+
+  it.each([file, fileBackedImage])(
+    "does not transfer $name when device verification fails",
+    async (attachment) => {
+      using verification = vi
+        .spyOn(clientAttestation, "authorize")
+        .mockRejectedValue(new Error("Device verification failed"));
+
+      await expect(
+        prepareTurnAttachments({
+          environmentId,
+          attachments: [attachment],
+          supportsImageUploads: true,
+        }),
+      ).rejects.toThrow("Device verification failed");
+
+      expect(verification).toHaveBeenCalledExactlyOnceWith("https://environment.example");
+      expect(mocks.upload).not.toHaveBeenCalled();
+      expect(removeCallsFor(MINTED_ID)).toBe(1);
+    },
+  );
 
   it("removes pending uploads when the native HTTP request fails", async () => {
     mocks.upload.mockResolvedValue({ status: 500, body: "failed", headers: {} });

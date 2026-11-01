@@ -1,5 +1,8 @@
-import { Alert, Pressable, Text } from "react-native";
+import { useState } from "react";
+import { Pressable, ScrollView, View } from "react-native";
 import type { AttestationStatus } from "@t3tools/contracts";
+import { AppText as Text } from "../../components/ui/AppText";
+import { Sheet } from "../../components/ui/Sheet";
 
 const checks = [
   [
@@ -48,6 +51,7 @@ export function AttestationIndicator({
   canSend: boolean;
   retry: () => void;
 }) {
+  const [showDetails, setShowDetails] = useState(false);
   const complete = canSend && checks.every(([key]) => status.checks[key]?.state === "verified");
   const label = canSend
     ? complete
@@ -60,43 +64,67 @@ export function AttestationIndicator({
         : status.phase === "expired"
           ? "Verification expired. Chat disabled."
           : "Verification unavailable. Chat disabled.";
-  const details = () =>
-    Alert.alert(
-      label,
-      [
-        canSend
-          ? "Required checks passed. VM software, key custody and routing remain trusted where marked unverified."
-          : status.message,
-        ...checks.map(
-          ([key, title, explanation]) =>
-            `${title}: ${status.checks[key]?.state === "verified" ? "Verified" : "Not verified"}\n${explanation}`,
-        ),
-        "These checks run on this phone. No laptop is required. Other inference providers do not become confidential.",
-      ].join("\n\n"),
-      [
-        { text: "Close", style: "cancel" },
-        { text: "Check again", onPress: retry },
-      ],
-    );
   return (
-    <Pressable
-      accessibilityRole="button"
-      accessibilityLabel={label}
-      onPress={details}
-      className="px-1 pb-1"
-    >
-      <Text
-        accessibilityLiveRegion="polite"
-        className={
-          complete
-            ? "text-xs text-adaptive-emerald-700-300"
-            : canSend || status.phase === "checking"
-              ? "text-xs text-warning-foreground"
-              : "text-xs text-danger-foreground"
-        }
+    <>
+      <Pressable
+        accessibilityRole="button"
+        accessibilityLabel={label}
+        onPress={() => setShowDetails(true)}
+        className="px-1 pb-1"
       >
-        ● {label}
-      </Text>
-    </Pressable>
+        <Text
+          accessibilityLiveRegion="polite"
+          className={
+            complete
+              ? "text-xs text-adaptive-emerald-700-300"
+              : canSend || status.phase === "checking"
+                ? "text-xs text-warning-foreground"
+                : "text-xs text-danger-foreground"
+          }
+        >
+          ● {label}
+        </Text>
+      </Pressable>
+      {showDetails && (
+        <Sheet title="Connection verification" onClose={() => setShowDetails(false)}>
+          <ScrollView
+            className="flex-1"
+            nestedScrollEnabled
+            contentInsetAdjustmentBehavior="automatic"
+            contentContainerStyle={{ padding: 20, paddingBottom: 40, gap: 20 }}
+          >
+            <View className="gap-2">
+              <Text accessibilityRole="header" className="text-lg font-semibold">
+                {label}
+              </Text>
+              <Text className="text-sm text-foreground-muted">
+                {canSend
+                  ? "Required checks passed. Items marked not verified still depend on trust."
+                  : status.message}
+              </Text>
+            </View>
+            {checks.map(([key, title, explanation]) => (
+              <View key={key} className="gap-1">
+                <Text className="text-base font-semibold">
+                  {title}: {status.checks[key]?.state === "verified" ? "Verified" : "Not verified"}
+                </Text>
+                <Text className="text-sm text-foreground-muted">{explanation}</Text>
+              </View>
+            ))}
+            <Text className="text-sm text-foreground-muted">
+              These checks run on this phone. No laptop is required. Other inference providers do
+              not become confidential.
+            </Text>
+            <Pressable
+              accessibilityRole="button"
+              onPress={retry}
+              className="rounded-xl bg-card-alt px-4 py-3"
+            >
+              <Text className="text-center font-semibold">Check again</Text>
+            </Pressable>
+          </ScrollView>
+        </Sheet>
+      )}
+    </>
   );
 }

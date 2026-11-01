@@ -24,6 +24,13 @@ the exact approved Tinfoil release. The mutable VM software and administrator
 remain trusted. This does not establish exclusive key custody or prove inference
 routing through a compromised VM. Other model providers do not become confidential.
 
+When the required checks pass but these protections remain unverified, the
+composer shows an amber "Attestation incomplete" indicator. Its details include
+the missing VM software, exclusive key custody and inference-routing proofs.
+Chat is enabled under the current hardware-and-inference policy; that permission
+does not mean full VM verification passed. Missing optional checks also remain
+incomplete rather than silently displaying a full pass.
+
 This fork defaults closed when a device has no trusted verifier. The desktop
 adapter is implemented here. Standalone web and mobile clients do not silently
 fall back to server assertions: without a device-verifier adapter their chat

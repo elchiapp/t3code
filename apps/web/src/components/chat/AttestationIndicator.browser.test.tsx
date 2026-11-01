@@ -34,6 +34,33 @@ const state = (phase: AttestationStatus["phase"]): AttestationStatus => ({
 });
 
 describe("attestation status in the composer", () => {
+  it("shows incomplete verification and the missing protections when only required checks pass", async () => {
+    const partial = {
+      ...state("verified"),
+      checks: {
+        ...state("verified").checks,
+        proxy_workload: { state: "not_configured" },
+        key_custody: { state: "not_configured" },
+        inference_route: { state: "not_configured" },
+      },
+    };
+    await using screen = await render(
+      <AttestationIndicator status={partial} canSend onRetry={() => {}} />,
+    );
+    await screen.getByRole("button", { name: "Attestation incomplete" }).click();
+    await expect.element(page.getByText("VM software", { exact: true })).toBeVisible();
+    await expect.element(page.getByText("Exclusive key custody", { exact: true })).toBeVisible();
+    await expect.element(page.getByText("Inference routing", { exact: true })).toBeVisible();
+    await expect.element(page.getByText("Not verified", { exact: true }).nth(2)).toBeVisible();
+    await expect
+      .element(
+        page.getByText(
+          "Chat is enabled because the required checks passed. Full VM verification is incomplete.",
+          { exact: true },
+        ),
+      )
+      .toBeVisible();
+  });
   it("unlocks after the subscribed device receipt changes, and closes again on failure", async () => {
     let notify = () => {};
     using snapshot = vi.spyOn(clientAttestation, "get").mockReturnValue(state("checking"));
@@ -50,7 +77,7 @@ describe("attestation status in the composer", () => {
     permission.mockReturnValue(true);
     notify();
     await expect
-      .element(screen.getByRole("button", { name: "Attestation verified" }))
+      .element(screen.getByRole("button", { name: "Attestation incomplete" }))
       .toBeVisible();
     await expect.element(screen.getByRole("button", { name: "Send fixture" })).toBeEnabled();
     snapshot.mockReturnValue(state("failed"));
@@ -70,9 +97,16 @@ describe("attestation status in the composer", () => {
       <AttestationIndicator status={state("failed")} canSend={false} onRetry={retry} />,
     );
     await expect.element(screen.getByRole("button", { name: "Verification failed" })).toBeVisible();
-    await screen.rerender(
-      <AttestationIndicator status={state("verified")} canSend onRetry={retry} />,
-    );
+    const complete = {
+      ...state("verified"),
+      checks: {
+        ...state("verified").checks,
+        proxy_workload: { state: "verified" },
+        key_custody: { state: "verified" },
+        inference_route: { state: "verified" },
+      },
+    };
+    await screen.rerender(<AttestationIndicator status={complete} canSend onRetry={retry} />);
     await expect
       .element(screen.getByRole("button", { name: "Attestation verified" }))
       .toBeVisible();

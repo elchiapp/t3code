@@ -212,6 +212,7 @@ export function VerifierHost() {
         onMessage={(event) => onMessage(event.nativeEvent.data)}
         onError={() => recover("Verifier failed")}
         onContentProcessDidTerminate={() => recover("Verifier stopped")}
+        onRenderProcessGone={() => recover("Verifier stopped")}
         javaScriptEnabled
         incognito
         thirdPartyCookiesEnabled={false}

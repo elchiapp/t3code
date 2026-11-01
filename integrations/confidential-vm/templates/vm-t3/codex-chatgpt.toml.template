@@ -1,0 +1,7 @@
+model_provider = "openai"
+check_for_update_on_startup = false
+cli_auth_credentials_store = "file"
+[analytics]
+enabled = false
+[feedback]
+enabled = false

@@ -1,0 +1,16 @@
+{
+  "vm_host": "your-vm.your-tailnet.ts.net",
+  "vm_tailscale_ip": "100.64.0.1",
+  "tailnet_owner": "owner@example.com",
+  "node_path": "/absolute/path/to/node",
+  "node_sha256": "REPLACE_WITH_REVIEWED_NODE_SHA256",
+  "python_path": "/usr/bin/python3",
+  "codex_path": "/absolute/path/to/codex",
+  "vm_node_path": "/absolute/path/to/vm/node",
+  "vm_attestation_root": "/srv/turing/attestation",
+  "vm_t3_root": "/srv/turing/t3",
+  "vm_local_proxy_root": "/srv/turing/local-proxy",
+  "vm_gateway_root": "/srv/turing/gateway",
+  "local_t3_origin": "http://127.0.0.1:3219",
+  "tinfoil_sdk_source": "integrations/confidential-vm/vendor/tinfoil-js"
+}

@@ -1,0 +1,21 @@
+model = "glm-5-3"
+model_provider = "tinfoil"
+model_reasoning_effort = "medium"
+model_reasoning_summary = "none"
+model_context_window = 128000
+model_auto_compact_token_limit = 100000
+check_for_update_on_startup = false
+web_search = "disabled"
+[model_providers.tinfoil]
+name = "Tinfoil verified gateway"
+base_url = "http://127.0.0.1:3412/v1"
+wire_api = "responses"
+requires_openai_auth = false
+supports_websockets = false
+request_max_retries = 1
+stream_max_retries = 1
+stream_idle_timeout_ms = 300000
+[analytics]
+enabled = false
+[feedback]
+enabled = false

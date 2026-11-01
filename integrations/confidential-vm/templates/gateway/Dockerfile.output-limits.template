@@ -1,0 +1,2 @@
+FROM sha256:330836520b33daf00c7690f6cf88c6f70cfa67f60580c36e165ecd9aa3be09ed
+COPY gateway-v2.mjs responses-chat.mjs /opt/turing/

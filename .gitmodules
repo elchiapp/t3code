@@ -1,0 +1,3 @@
+[submodule "integrations/confidential-vm/vendor/tinfoil-js"]
+	path = integrations/confidential-vm/vendor/tinfoil-js
+	url = https://github.com/tinfoilsh/tinfoil-js.git

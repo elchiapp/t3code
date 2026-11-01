@@ -1,0 +1,41 @@
+[Unit]
+Description=Owner-only public hardware evidence for the T3 laptop verifier
+After=network-online.target tailscaled.service turing-data.service
+Requires=turing-data.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=turing
+Group=turing
+SupplementaryGroups=ubuntu
+WorkingDirectory={{VM_ATTESTATION_ROOT}}
+ExecStart={{VM_NODE_PATH}} {{VM_ATTESTATION_ROOT}}/vm-proof-server.mjs
+Environment=PYTHONDONTWRITEBYTECODE=1
+Restart=on-failure
+RestartSec=5
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictSUIDSGID=yes
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+CapabilityBoundingSet=
+DevicePolicy=closed
+DeviceAllow=/dev/sev-guest rw
+IPAddressDeny=any
+IPAddressAllow=100.64.0.0/10
+IPAddressAllow=127.0.0.0/8
+IPAddressAllow=::1/128
+UMask=0077
+MemoryMax=192M
+TasksMax=32
+LimitNOFILE=512
+StandardOutput=null
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,40 @@
+import {existsSync,mkdirSync,readFileSync,openSync,writeFileSync,fsyncSync,closeSync,renameSync} from 'node:fs';
+import {dirname} from 'node:path';
+import {hasImageInput} from './catalog.mjs';
+export function upperBoundCost(model,payload,byteLength,{audio=false}={}) {
+  const price=model.pricing;
+  if(!price||!['inputTokenPricePer1M','outputTokenPricePer1M','requestPrice'].every(k=>Number.isFinite(price[k])&&price[k]>=0))throw new Error('Missing model pricing');
+  const hasImage=hasImageInput(payload);
+  const context=model.context_window;
+  if(price.inputTokenPricePer1M>0&&(!Number.isFinite(context)||context<=0))throw new Error('Unknown context limit for billed model');
+  const input=hasImage||audio||payload?.previous_response_id?context:Math.min(context??0,byteLength+8192);
+  const output=audio?8192:Math.min(Number(payload?.max_output_tokens??payload?.max_tokens??8192),8192);
+  const nominal=(input??0)/1e6*price.inputTokenPricePer1M+output/1e6*price.outputTokenPricePer1M+price.requestPrice;
+  return Math.max(0.01,Math.ceil((nominal*3+0.01)*1e6)/1e6);
+}
+export class BudgetLedger {
+  constructor(path,{limitUSD=25,expiresAt='2026-09-12T00:00:00Z',clock=()=>Date.now()}={}) {
+    this.path=path;this.clock=clock;mkdirSync(dirname(path),{recursive:true,mode:0o700});
+    if(existsSync(path)){
+      this.state=JSON.parse(readFileSync(path,'utf8'));
+      if(this.state.version!==1||!Number.isFinite(this.state.limitUSD)||this.state.limitUSD<=0||!Number.isFinite(this.state.reservedUSD)||this.state.reservedUSD<0||!Number.isInteger(this.state.requests)||!Array.isArray(this.state.entries)||!Number.isFinite(Date.parse(this.state.expiresAt)))throw new Error('Invalid budget ledger; refusing paid traffic');
+      this.state.limitUSD=Math.min(this.state.limitUSD,limitUSD);
+    }else{this.state={version:1,task:'private-assistant-2026-09-11',limitUSD,reservedUSD:0,requests:0,expiresAt,entries:[]};this.persist();}
+  }
+  persist(){
+    const tmp=this.path+'.next';const fd=openSync(tmp,'w',0o600);
+    try{writeFileSync(fd,JSON.stringify(this.state)+'\n');fsyncSync(fd);}finally{closeSync(fd);}
+    renameSync(tmp,this.path);
+    const parent=openSync(dirname(this.path),'r');try{fsyncSync(parent);}finally{closeSync(parent);}
+  }
+  reserve(amount,model,endpoint){
+    if(this.clock()>=Date.parse(this.state.expiresAt))throw new Error('Test budget expired; paid requests are stopped');
+    if(!Number.isFinite(amount)||amount<=0||this.state.reservedUSD+amount>this.state.limitUSD)throw new Error('Test budget exhausted; paid requests are stopped');
+    this.state.reservedUSD=Math.ceil((this.state.reservedUSD+amount)*1e6)/1e6;this.state.requests++;
+    this.state.entries.push({at:new Date(this.clock()).toISOString(),model,endpoint,reservedUSD:amount});
+    // Write before forwarding; never refund failed or timed-out requests.
+    this.persist();
+  }
+  status(){return {limitUSD:this.state.limitUSD,reservedUpperBoundUSD:this.state.reservedUSD,requests:this.state.requests,expiresAt:this.state.expiresAt,
+    stopped:this.clock()>=Date.parse(this.state.expiresAt)||this.state.reservedUSD>=this.state.limitUSD};}
+}

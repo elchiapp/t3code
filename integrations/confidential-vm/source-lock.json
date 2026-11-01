@@ -1,0 +1,194 @@
+{
+  "base_t3_commit": "d2c440312e5f39d59827ed466838a623516454d6",
+  "sdk_repository": "tinfoilsh/tinfoil-js",
+  "sdk_revision": "35ef04e9a74f1c35b13d09d844cbbd70329e449c",
+  "scope": "Source templates only; no credentials, user data or runtime receipts.",
+  "files": {
+    "templates/vm-t3/codex-tinfoil.toml.template": {
+      "template_sha256": "0c95d57b79268f37a43bd73ffdb29f59fa5f540ec3edb4efcf06d7085e64ba8b"
+    },
+    "templates/vm-t3/codex-chatgpt.toml.template": {
+      "template_sha256": "2c017f4f3f6b78bc045c8cf5d8d1aa49803c27b9146ab3610a6752262c5bb289"
+    },
+    "templates/vm-t3/turing-t3-multi.service.template": {
+      "template_sha256": "f8e36346525fc7b42614a7a2a2223bdd4c88cd49a41b468afdf2d2d2c2aaeea3"
+    },
+    "templates/vm-t3/install.py.template": {
+      "template_sha256": "36d78392d18d7663fcdb1185160342998be1c9a93537fb507889188dcef16742"
+    },
+    "templates/vm-t3/turing-t3-gateway.service.template": {
+      "template_sha256": "b5a9fc2d7819d2aa9c59242e4210765297ad858deb7eeff7e8324cc0240f8c12"
+    },
+    "templates/vm-t3/desktop-launch.sh.template": {
+      "template_sha256": "47a1e2e4c03cb298312f80694503501c8f0f1a092486680b458539fa5edd57be"
+    },
+    "templates/vm-t3/gateway-forward.py.template": {
+      "template_sha256": "1083ae87a81b6fb0eac0d9ba528f452e8682fe242233897e8f0968fa5e54266c"
+    },
+    "templates/vm-t3/test-gateway-forward.py.template": {
+      "template_sha256": "b240ec4d11c62b659083c3dc01419ff7813a72abde55c268a81acca19be9f319"
+    },
+    "templates/browser/install-v2.py.template": {
+      "template_sha256": "0f225727579c3d1197f44add244852e182f7a53fe7dda810a1d64ba49a1ccc6b"
+    },
+    "templates/browser/install.py.template": {
+      "template_sha256": "e992bdcf671d2ce0db37e59edf6316d05954178e68c80c8ed06c9d72a4e9b119"
+    },
+    "templates/sandbox/20-bwrap-path.conf.template": {
+      "template_sha256": "3e7bd682a4dfda33430b9e91092e8bb344083e74b31a54a3c4ab48f50e172571"
+    },
+    "templates/sandbox/install.py.template": {
+      "template_sha256": "a185323f5ce1f58a835f8d4d2331b53f3756e7ecba0eef7596729c901c247680"
+    },
+    "templates/sandbox/probe.py.template": {
+      "template_sha256": "53aa92475ad5b0eb364b7f9c35d90432e31dabc69204bdba063406f326407331"
+    },
+    "templates/sandbox/t3-bwrap-userns-restrict.template": {
+      "template_sha256": "4cbb88954e6371fd7392807b1c04cbe9eace85d7f17f6dfb52e5da02ebe4d8bb"
+    },
+    "templates/sandbox/bwrap-userns-restrict.template": {
+      "template_sha256": "11d39094f044f0cda0febb3ad517b830301da6b2ce929664af09ee9e4dd264f9"
+    },
+    "templates/attestation/gate-state.mjs.template": {
+      "template_sha256": "b3443d413f0e820ff0fae2bc88987836ab9514918543697cd46d48d9905fc781"
+    },
+    "templates/attestation/gate.node-test.mjs.template": {
+      "template_sha256": "1ed98b9881f14d39b4688ed8e56c93878b6eb55c00ef34e829eeca113e19976c"
+    },
+    "templates/attestation/release-decision.mjs.template": {
+      "template_sha256": "e67bae59b92cc43733c4dd49016113793a21d047f6eae3dac92874a56c73e7fc"
+    },
+    "templates/attestation/vm-proof-server.mjs.template": {
+      "template_sha256": "bafb51cd6b9578906cb1ab1fe6b42e7f62e3d28b072940775647bdef2e1626db"
+    },
+    "templates/attestation/install-proof-endpoint.py.template": {
+      "template_sha256": "87e6e6f7d4c43ec696b84a0dbad730739f37cd90d115b335eceac57d2b1a6524"
+    },
+    "templates/attestation/release-approvals.node-test.mjs.template": {
+      "template_sha256": "ce7f151d2abf131ebedaef62ec71a8c881f29d2146235d9ed0fe36f198557b02"
+    },
+    "templates/attestation/snp_collect.py.template": {
+      "template_sha256": "3079db67f1dc5b5383f5c4da789cac9ed0a1bdcc02a5a1b618e2a989a610cfb7"
+    },
+    "templates/attestation/gate-server.mjs.template": {
+      "template_sha256": "6183eea71f618855591041646a3bba97b3662e5746410f41ffc809384136f737"
+    },
+    "templates/attestation/release-approvals.mjs.template": {
+      "template_sha256": "4d9ad740aa82db2178f71dd4ab6de5595d1bafb11637d04ae33553900e2229c2"
+    },
+    "templates/attestation/vm-proof-server.node-test.mjs.template": {
+      "template_sha256": "a3eb6e970ed71f2948a3ec54b67d4f33a5430b48fd61bb2812eba34be329cb12"
+    },
+    "templates/attestation/turing-t3-attestation.service.template": {
+      "template_sha256": "5e310b35d2b0fba201457c73f7092084cfbbba3704a25e2ec6ee20fa8cc8b62f"
+    },
+    "templates/attestation/crypto-verifier.mjs.template": {
+      "template_sha256": "55d05f807332f8282873206f60cf8ed2bcbf74770e98e633a28bb8772892bb67"
+    },
+    "templates/attestation/collect-evidence.mjs.template": {
+      "template_sha256": "aab9381900cc2da90480c604854a4791011ea8b942ebef60125a53330e87a268"
+    },
+    "templates/attestation/main.mjs.template": {
+      "template_sha256": "da1af5d5fe144cc655eb2034abb85a61ab63b71df86c0b9182df0f264d791ac8"
+    },
+    "templates/attestation/guard-run.py.template": {
+      "template_sha256": "8cc485d70088fd0703d03a594d1df7cdf10b6f44cdb5ad231e05d3a98c0f1321"
+    },
+    "templates/attestation/endpoint-binding.mjs.template": {
+      "template_sha256": "b802fc74621387d68772a72962246b6590e087324b919f0c485189e535e02ace"
+    },
+    "templates/attestation/endpoint-binding.node-test.mjs.template": {
+      "template_sha256": "d756cbf2ebc8cc5a33ae782b50ac7a4f36e66d4e0d47fa379b849a8446401ab9"
+    },
+    "templates/attestation/test_snp_collect.py.template": {
+      "template_sha256": "f85317cf1c55abc6a960d6a84ea034f5bc55378fee94a2a2e6281a6ee95db40e"
+    },
+    "templates/attestation/io.elchiapp.t3-attestation-guard.plist.template": {
+      "template_sha256": "9b8b14448018138ee9c50707b048af2491f8a4f245a946632b148abce905e551"
+    },
+    "templates/local-proxy/turing-local-inference.service.template": {
+      "template_sha256": "1cfb954c771f898062204640246cc2347afe8c6b83cc87f177310be0b3479e2d"
+    },
+    "templates/local-proxy/owner-proxy-complete.node-test.mjs.template": {
+      "template_sha256": "211dadf6172124e48c601f2ae760fb564dbd4c26667a1c2b869e1b8559adfe4a"
+    },
+    "templates/local-proxy/owner-proxy.mjs.template": {
+      "template_sha256": "fecdbad6155ca145676de0b0963563a4475f4d27cdec32022c86a5fe4aa4e0d3"
+    },
+    "templates/local-proxy/owner-proxy.node-test.mjs.template": {
+      "template_sha256": "e809a2d6ee17b3e5659a98b37b73c6f578a4a02934747d8a99a9803a65c20bd1"
+    },
+    "templates/local-proxy/install-vm.py.template": {
+      "template_sha256": "fbb6860ca58526c7e9f6624366fa0ba14e9112202f3f54aff37ec1fc842a7b16"
+    },
+    "templates/gateway/chat-stream.mjs.template": {
+      "template_sha256": "00014194b304aa3fa07698271443b222fb1b7d14566a8abdb0020be9d689e333"
+    },
+    "templates/gateway/request-lifetime.mjs.template": {
+      "template_sha256": "e70867d8d55519c91592bb3a59d2e6117526377300d9fb8e47b99f098ba36882"
+    },
+    "templates/gateway/Dockerfile.output-limits.template": {
+      "template_sha256": "e604f7ad2985993d1c91710844afc7e69618381d57765f2ec19a567d0587f062"
+    },
+    "templates/gateway/output-limits.node-test.mjs.template": {
+      "template_sha256": "bb63602b7f65d43b72830cca3de6891ba4ede9b355bad3795f285a56c4aac9de"
+    },
+    "templates/gateway/kimi-framing.mjs.template": {
+      "template_sha256": "523168d48bb7004a3c92d5d5e0750a5ca323f2e9dae380168af107b04869b7a5"
+    },
+    "templates/gateway/responses-chat.mjs.template": {
+      "template_sha256": "658913e012428db14f5b217ef09ec3786bd10a1702d1d5d671f59719dec8a73f"
+    },
+    "templates/gateway/budget.mjs.template": {
+      "template_sha256": "0208194e0feb1815da6b1606b3aeb0985b2863a7675f76089464147da75b0f62"
+    },
+    "templates/gateway/catalog.mjs.template": {
+      "template_sha256": "c292285e2b915cf9dfcba1ad75e7557a08e94a62343f545df718bad5c9218bf7"
+    },
+    "templates/gateway/gateway-v2.mjs.template": {
+      "template_sha256": "faad53faefeaf6a124cabbc6a30f95d23bfcd45fc12bf6bf286403ee5bbf0599"
+    },
+    "templates/gateway/install-output-limits.py.template": {
+      "template_sha256": "ac8b96e98f0d9b256de26f0199c5500e8e293f23570510e25f6db47dbd511206"
+    },
+    "templates/gateway/chat-stream.node-test.mjs.template": {
+      "template_sha256": "ab0a39ecb55c91b0238fc232eb280ff9c875514b5d586b332c0ad20e49cb4f20"
+    },
+    "templates/local-proxy/local/codex-model-instructions.md.template": {
+      "template_sha256": "294602e3502bb0ff840a82cd1d08ac526125a6cdf763e1f883e8d74f47cc2a8d"
+    },
+    "templates/local-proxy/local/catalog.py.template": {
+      "template_sha256": "5703cd6f14801b994358ac268b55d3f47556cb7026956a2b660a1bfaca9475ea"
+    },
+    "templates/local-proxy/local/server-run.py.template": {
+      "template_sha256": "42cc9c4db7aa142de62a482722ddf21963acb9c5bc9fe8f509f8849ca2af5a75"
+    },
+    "templates/local-proxy/local/io.elchiapp.t3-local-vm-proxy.plist.template": {
+      "template_sha256": "bf405791f8fb74bf89f9e9bda69496a69fe087d29db9ec62f7a2c291f3e2a3ff"
+    },
+    "templates/local-proxy/local/codex-proxy.template": {
+      "template_sha256": "393f4372eaa47d8e6ff9cbb96728c23176a077f186eacf41b388b7d9c95237b0"
+    },
+    "templates/local-proxy/local/install-local-service.py.template": {
+      "template_sha256": "f724daaddf15ffd4a7ff586caa16eded3a3c4580ac59cd20dd6ef38b88be663f"
+    },
+    "templates/local-proxy/local/t3.template": {
+      "template_sha256": "d7c9e359ff72fa092f6d784e941ea741ff05b2b9aad956d690e4eb4aff629cef"
+    },
+    "templates/attestation/verifier/policy.json.template": {
+      "template_sha256": "70b448ab4b334c1911789edbbd6f50163fc4b8772d3a88e25ea72403025448b0"
+    },
+    "templates/attestation/verifier/verifier-core.mjs.template": {
+      "template_sha256": "8d8dc0c00787be98e70d1bed5511c636c87be8d58c8be9a41d16f54c42f0f189"
+    },
+    "templates/attestation/verifier/inputs.json.template": {
+      "template_sha256": "fbfd0a374d9dc8ba445a1fbb2b9ca3dd6ccec2db6323b87dc98af42addd77838"
+    },
+    "templates/attestation/verifier/inference-release-policy.mjs.template": {
+      "template_sha256": "4c41456bd075634d17af042147c45d17062695aca51730a8358ff7bf5b97bdfb"
+    },
+    "templates/attestation/verifier/vcek-bindings.mjs.template": {
+      "template_sha256": "2f7102f5ff3c107ebbe9668228382a32e018260ca736816d00f238dcf63c5948"
+    }
+  }
+}

@@ -1,0 +1,45 @@
+import http from 'node:http';
+import {readFileSync} from 'node:fs';
+import {pathToFileURL} from 'node:url';
+
+export function createOwnerProxy({owner,upstream='http://127.0.0.1:3412',maxBytes=30*1024*1024}) {
+  if(!owner)throw Error('An explicit owner identity is required');
+  const target=new URL(upstream);
+  if(target.protocol!=='http:'||!['127.0.0.1','localhost','[::1]'].includes(target.hostname))throw Error('Upstream must be loopback HTTP');
+  const allowed=new Set(['GET /healthz','GET /v1/models','GET /codex/models','POST /v1/responses','POST /v1/audio/transcriptions']);
+  return http.createServer({requestTimeout:300000,headersTimeout:15000},(req,res)=>{
+    const fail=(status,message)=>{if(!res.headersSent){res.writeHead(status,{'content-type':'application/json','cache-control':'no-store'});res.end(JSON.stringify({error:{message}}));}else res.destroy();};
+    const identity=req.headers['tailscale-user-login'];
+    if(!identity){fail(401,'Tailscale identity required');return;}
+    if(identity!==owner){fail(403,'This Tailscale account is not allowed');return;}
+    if(!allowed.has(req.method+' '+req.url)){fail(404,'Unsupported inference endpoint');return;}
+    const size=req.headers['content-length'];
+    if(size!==undefined&&(!/^\d+$/.test(size)||Number(size)>maxBytes)){fail(413,'Request too large');return;}
+    const headers={};
+    if(req.headers['content-type'])headers['content-type']=req.headers['content-type'];
+    if(size!==undefined)headers['content-length']=size;
+    // No client credentials, cookies, identity headers, redirects or retries cross this boundary.
+    const outgoing=http.request(new URL(req.url,target),{method:req.method,headers},incoming=>{
+      const responseHeaders={'cache-control':'no-store','x-accel-buffering':'no'};
+      for(const name of ['content-type','content-length'])if(incoming.headers[name])responseHeaders[name]=incoming.headers[name];
+      res.writeHead(incoming.statusCode??502,responseHeaders);
+      incoming.on('error',()=>res.destroy());
+      incoming.pipe(res);
+    });
+    outgoing.setTimeout(330000,()=>outgoing.destroy());
+    outgoing.on('error',()=>fail(502,'Verified inference gateway unavailable'));
+    let bytes=0;
+    req.on('data',chunk=>{
+      bytes+=chunk.length;
+      if(bytes>maxBytes){req.unpipe(outgoing);outgoing.destroy();fail(413,'Request too large');req.resume();}
+    });
+    req.on('aborted',()=>outgoing.destroy());
+    res.on('close',()=>{if(!res.writableFinished)outgoing.destroy();});
+    req.pipe(outgoing);
+  });
+}
+
+if(process.argv[1]&&import.meta.url===pathToFileURL(process.argv[1]).href){
+  const config=JSON.parse(readFileSync(process.argv[2],'utf8'));
+  createOwnerProxy({owner:config.owner}).listen(3413,'127.0.0.1');
+}

@@ -1,0 +1,50 @@
+export function chatModels(catalog) {
+  return catalog.data.filter(m => ['chat', 'safety'].includes(m.type) && m.tool_calling === true
+    && m.endpoints?.some(e => ['/v1/responses','/v1/chat/completions'].includes(e)));
+}
+export function hasImageInput(value) {
+  if(!value||typeof value!=='object')return false;
+  if(['input_image','image','image_url','localImage'].includes(value.type))return true;
+  return Object.values(value).some(hasImageInput);
+}
+export function modelEfforts(model) {
+  if (!model.reasoning) return [];
+  return model.id === 'kimi-k3' ? ['low','high','max'] : ['low','medium','high'];
+}
+export function codexCatalog(catalog) {
+  return {data:chatModels(catalog).map(m=>({id:m.id,model:m.id,
+    displayName:`Tinfoil · ${m.name}${m.multimodal?' · Vision':''}${m.type==='safety'?' · Safety':''}`,
+    description:m.description,isDefault:m.id==='glm-5-3',hidden:false,
+    defaultReasoningEffort:!m.reasoning?null:m.id==='kimi-k3'?'high':'medium',
+    supportedReasoningEfforts:modelEfforts(m).map(reasoningEffort=>({reasoningEffort,description:reasoningEffort})),
+    inputModalities:m.multimodal?['text','image']:['text'],supportsPersonality:false,contextWindow:m.context_window})),nextCursor:null};
+}
+export function normalizeReasoning(payload,model,endpoint) {
+  const p=structuredClone(payload);let effort=p.reasoning?.effort??p.reasoning_effort??'medium';
+  if(!model.reasoning){delete p.reasoning;delete p.reasoning_effort;return p;}
+  if(model.id==='kimi-k3'){
+    effort=({none:'low',minimal:'low',medium:'high',xhigh:'max'}[effort]??effort);
+    if(!['low','high','max'].includes(effort))throw new Error('Unsupported Kimi reasoning effort');
+    if(endpoint==='/v1/responses')p.reasoning={...p.reasoning,effort};else p.reasoning_effort=effort;
+  }
+  const config=model.reasoning_params;
+  const template=config?.params?.[endpoint]?.[!['none','off'].includes(effort)?'enable':'disable'];
+  if(template){
+    const mapped=config?.effort_map?.[effort]??effort;
+    const expand=v=>typeof v==='string'?v.replaceAll('$EFFORT',mapped):Array.isArray(v)?v.map(expand):v&&typeof v==='object'?Object.fromEntries(Object.entries(v).map(([k,x])=>[k,expand(x)])):v;
+    Object.assign(p,expand(template));
+    if(p.reasoning&&config.effort_map)p.reasoning={...p.reasoning,effort:mapped};
+  }
+  return p;
+}
+export function validateCatalog(value) {
+  if(!Array.isArray(value?.data)||!value.data.length)throw new Error('Invalid Tinfoil catalog');
+  const seen=new Set();
+  for(const m of value.data){
+    if(typeof m.id!=='string'||!/^[a-zA-Z0-9._-]+$/.test(m.id)||seen.has(m.id))throw new Error('Invalid model identity');
+    seen.add(m.id);
+    for(const k of ['inputTokenPricePer1M','outputTokenPricePer1M','requestPrice'])
+      if(!Number.isFinite(m.pricing?.[k])||m.pricing[k]<0)throw new Error('Missing model price; paid requests disabled');
+  }
+  return value;
+}

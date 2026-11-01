@@ -1,0 +1,60 @@
+import http from 'node:http';
+import {createHash} from 'node:crypto';
+import {spawn} from 'node:child_process';
+import {fileURLToPath,pathToFileURL} from 'node:url';
+import {commitment,peerKey,MODEL_ORIGIN} from './endpoint-binding.mjs';
+
+export const OWNER='{{TAILNET_OWNER}}';
+export function reportBinding(c){
+  const nonce=createHash('sha256').update(JSON.stringify([c.protocol,c.id,c.nonce,c.origin,c.policySha256,c.sessionKeyThumbprint,c.issuedAt,c.expiresAt])).digest('base64url');
+  return createHash('sha512').update(nonce).digest('hex');
+}
+export function validateRequest(body,currentKey,now=Date.now()){
+  if(!body||body.version!==1||body.modelOrigin!==MODEL_ORIGIN||body.tlsSpkiSha256!==currentKey)throw Error('Proof target does not match this endpoint');
+  const c=body.challenge;
+  if(!c||c.protocol!=='turing-privacy-evidence-v1'||c.origin!=='{{EVIDENCE_ORIGIN}}')throw Error('Unsupported proof protocol or origin');
+  for(const k of ['id','nonce','policySha256','sessionKeyThumbprint'])if(!/^[A-Za-z0-9_-]{43}$/.test(c[k]??''))throw Error('Invalid proof challenge');
+  if(c.nonce!==commitment(body.nonce,currentKey))throw Error('TLS key commitment mismatch');
+  if(!Number.isSafeInteger(c.issuedAt)||!Number.isSafeInteger(c.expiresAt)||c.issuedAt>now+30000||c.expiresAt<=now||c.expiresAt-c.issuedAt>60000||now-c.issuedAt>60000)throw Error('Proof challenge is not fresh');
+  return c;
+}
+export async function whoisOwner(address,port){
+  const ip=address?.replace(/^::ffff:/,'');
+  if(!ip||!/^100\.(?:\d{1,3}\.){2}\d{1,3}$/.test(ip))return false;
+  const identity=await new Promise((resolve,reject)=>{
+    const q=http.get({socketPath:'/var/run/tailscale/tailscaled.sock',path:'/localapi/v0/whois?addr='+encodeURIComponent(ip+':'+port),headers:{Host:'local-tailscaled.sock'}},r=>{
+      let size=0;const parts=[];r.on('data',c=>{size+=c.length;if(size>131072)r.destroy(Error('Identity response too large'));else parts.push(c);});r.on('error',reject);r.on('end',()=>{try{if(r.statusCode!==200)throw Error('No Tailscale identity');resolve(JSON.parse(Buffer.concat(parts)));}catch(error){reject(error);}});
+    });q.setTimeout(3000,()=>q.destroy(Error('Identity lookup timed out')));q.on('error',reject);
+  });
+  return identity.UserProfile?.LoginName===OWNER&&!(identity.Node?.Tags?.length);
+}
+export async function deviceQuote(binding){
+  return new Promise((resolve,reject)=>{
+    const p=spawn('/usr/bin/python3',[fileURLToPath(new URL('./snp_collect.py',import.meta.url))],{stdio:['pipe','pipe','pipe'],env:{PATH:'/usr/bin:/bin',LANG:'C.UTF-8'}});
+    let size=0;const chunks=[];const timer=setTimeout(()=>{p.kill('SIGTERM');reject(Error('Hardware quote timed out'));},20000);
+    p.stdout.on('data',c=>{size+=c.length;if(size>65536){p.kill('SIGTERM');reject(Error('Hardware quote too large'));}else chunks.push(c);});p.stderr.resume();p.on('error',reject);
+    p.on('close',code=>{clearTimeout(timer);if(code!==0){reject(Error('The VM hardware-report driver did not produce a quote'));return;}try{resolve(JSON.parse(Buffer.concat(chunks)));}catch{reject(Error('Hardware collector output is invalid'));}});
+    p.stdin.end(binding+'\n');
+  });
+}
+export function createProofServer({authenticate=whoisOwner,getKey=peerKey,getQuote=deviceQuote,now=Date.now,minIntervalMs=2000}={}){
+  let busy=false,lastAttempt=-Infinity;
+  return http.createServer({requestTimeout:25000,headersTimeout:5000},async(req,res)=>{
+    const reply=(status,value)=>{if(!res.headersSent){res.writeHead(status,{'content-type':'application/json','cache-control':'no-store'});res.end(JSON.stringify(value));}};
+    try{
+      if(req.headers.origin){reply(403,{error:'Browser origins may not request hardware quotes directly'});return;}
+      if(!await authenticate(req.socket.remoteAddress,req.socket.remotePort)){reply(403,{error:'An authorized Tailscale owner is required'});return;}
+      if(req.method!=='POST'||req.url!=='/proof'){reply(404,{error:'Unsupported proof endpoint'});return;}
+      if(!/^application\/json(?:;|$)/i.test(req.headers['content-type']??'')){reply(415,{error:'JSON is required'});return;}
+      let size=0;const parts=[];for await(const c of req){size+=c.length;if(size>16384){reply(413,{error:'Challenge too large'});return;}parts.push(c);}
+      let body;try{body=JSON.parse(Buffer.concat(parts));}catch{reply(400,{error:'Invalid challenge JSON'});return;}
+      const tlsSpkiSha256=await getKey();
+      let challenge;try{challenge=validateRequest(body,tlsSpkiSha256,now());}catch(error){reply(400,{error:error.message});return;}
+      if(busy||now()-lastAttempt<minIntervalMs){reply(429,{error:'Hardware collector is busy; no model request has been made'});return;}
+      busy=true;lastAttempt=now();
+      try{const snp=await getQuote(reportBinding(challenge));reply(200,{version:1,modelOrigin:MODEL_ORIGIN,tlsSpkiSha256,snp});}
+      finally{busy=false;}
+    }catch{reply(503,{error:'Hardware proof is unavailable; no verified claim is made'});}
+  });
+}
+if(process.argv[1]&&import.meta.url===pathToFileURL(process.argv[1]).href)createProofServer().listen(3430,'{{VM_TAILSCALE_IP}}');

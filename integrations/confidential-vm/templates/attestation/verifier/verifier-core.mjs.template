@@ -1,0 +1,1024 @@
+// @ts-nocheck — verbatim copy of deploy/privacy-center/verifier-core.mjs (parity-tested)
+// Turing Privacy Verification Center — client-side evidence evaluator.
+//
+// Dependency-free (WebCrypto only) so the exact same source runs in the
+// HAPI web panel, the standalone pinned verifier page and Node tests.
+// A JSON boolean from the server is never accepted as proof: every domain
+// either verifies cryptographic evidence locally or reports an honest
+// unverified/failed/unavailable state.
+//
+// Nothing in this module claims that TLS/Tailscale, a mounted LUKS volume or
+// an SNP launch measurement proves custody of the running HAPI/Codex
+// containers or of the browser session.
+
+export const PROTOCOL = 'turing-privacy-evidence-v1';
+export const VERIFIER_BUILD = 'privacy-center-1';
+
+export const STATE = Object.freeze({
+  VERIFIED: 'verified',
+  FAILED: 'failed',
+  EXPIRED: 'expired',
+  UNAVAILABLE: 'unavailable',
+  UNVERIFIED: 'unverified',
+  CHECKING: 'checking' // UI-only: core never returns it
+});
+
+export const DOMAINS = Object.freeze([
+  {id: 'verifier-client-trust', title: 'Verifier / client trust',
+   summary: 'This verifier was delivered through an independent pinned channel, not by the HAPI origin it checks.'},
+  {id: 'nonce-replay', title: 'Fresh nonce & replay protection',
+   summary: 'The evidence answers a fresh browser-generated challenge, is TLS-side tamper-evident via a signed transcript and cannot be replayed.'},
+  {id: 'snp-hardware-firmware', title: 'GCP AMD SEV-SNP hardware & firmware',
+   summary: 'A Google-signed Confidential Space workload token proves the hardware model and debug-off state.'},
+  {id: 'secure-boot-vtpm', title: 'Secure Boot, vTPM & measured boot',
+   summary: 'The workload token claims Secure Boot enabled since boot; the token itself exists only through the vTPM-backed launcher.'},
+  {id: 'approved-workload', title: 'Approved HAPI/Codex workload & release',
+   summary: 'Running image digests and configuration match the pinned release manifest, proven by the measured launcher — not self-reported.'},
+  {id: 'session-key-binding', title: 'Attestation ↔ browser session binding',
+   summary: 'The attestation transcript commits to this browser tab’s ephemeral session key, origin and release policy.'},
+  {id: 'luks-storage', title: 'LUKS storage & attestation-gated key release',
+   summary: 'The storage key was released only to the attested approved workload; a mounted disk alone does not prove this.'},
+  {id: 'tinfoil-enclave', title: 'Tinfoil enclave code measurement & release',
+   summary: 'Independent, Milan-compatible client-side verification of the Tinfoil enclave measurement against its approved release.'},
+  {id: 'tinfoil-hpke-channel', title: 'Tinfoil HPKE encrypted inference channel',
+   summary: 'The VM→Tinfoil leg is HPKE-encrypted to the verified enclave key; observable by this verifier only via official verification evidence.'},
+  {id: 'evidence-freshness', title: 'Evidence freshness & revocation',
+   summary: 'Evidence is recent, within clock skew, schema-supported and its release is not revoked.'}
+]);
+
+// --- small helpers --------------------------------------------------------
+
+function fail(code) { throw new PrivacyError(code); }
+export class PrivacyError extends Error {}
+
+const encoder = new TextEncoder();
+
+function isObject(v) { return v !== null && typeof v === 'object' && !Array.isArray(v); }
+
+export function canonicalJSON(value) {
+  if (Array.isArray(value)) return '[' + value.map(canonicalJSON).join(',') + ']';
+  if (isObject(value)) {
+    return '{' + Object.keys(value).sort().map(k => JSON.stringify(k) + ':' + canonicalJSON(value[k])).join(',') + '}';
+  }
+  return JSON.stringify(value);
+}
+
+export function base64urlEncode(bytes) {
+  let s = typeof bytes === 'string' ? bytes : String.fromCharCode(...bytes);
+  return btoa(s).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+}
+export function base64urlDecode(s) {
+  if (typeof s !== 'string' || !/^[A-Za-z0-9_-]*$/.test(s)) fail('bad_base64url');
+  const b64 = s.replace(/-/g, '+').replace(/_/g, '/');
+  return Uint8Array.from(atob(b64), c => c.charCodeAt(0));
+}
+
+export async function sha256B64(value) {
+  const bytes = typeof value === 'string' ? encoder.encode(value) : value;
+  return base64urlEncode(new Uint8Array(await crypto.subtle.digest('SHA-256', bytes)));
+}
+
+export function randomToken(byteLength = 32) {
+  return base64urlEncode(crypto.getRandomValues(new Uint8Array(byteLength)));
+}
+
+// RFC 7638 JWK thumbprint (P-256 EC or Ed25519 OKP), base64url SHA-256.
+export async function jwkThumbprint(jwk) {
+  if (!isObject(jwk)) fail('session_key_invalid');
+  let canonical;
+  if (jwk.kty === 'EC' && jwk.crv === 'P-256' && typeof jwk.x === 'string' && typeof jwk.y === 'string') {
+    canonical = `{"crv":"P-256","kty":"EC","x":"${jwk.x}","y":"${jwk.y}"}`;
+  } else if (jwk.kty === 'OKP' && jwk.crv === 'Ed25519' && typeof jwk.x === 'string') {
+    canonical = `{"crv":"Ed25519","kty":"OKP","x":"${jwk.x}"}`;
+  } else fail('session_key_invalid');
+  return sha256B64(encoder.encode(canonical));
+}
+
+export function sameJSON(a, b) { return canonicalJSON(a) === canonicalJSON(b); }
+
+function checkUrl(u, field) {
+  let parsed;
+  try { parsed = new URL(u); } catch { fail(`policy_${field}`); }
+  if (parsed.protocol !== 'https:' || parsed.username || parsed.password || parsed.hash || parsed.search) fail(`policy_${field}`);
+}
+
+const HEX64 = /^[a-f0-9]{64}$/;
+function checkHex(v, field) { if (typeof v !== 'string' || !HEX64.test(v)) fail(`policy_${field}`); }
+const DIGEST = /^sha256:[a-f0-9]{64}$/;
+function checkDigest(v, field) { if (typeof v !== 'string' || !DIGEST.test(v)) fail(`policy_${field}`); }
+
+function freezeDeep(value) {
+  if (isObject(value) || Array.isArray(value)) {
+    for (const v of Object.values(value)) freezeDeep(v);
+    Object.freeze(value);
+  }
+  return value;
+}
+
+// --- policy ---------------------------------------------------------------
+
+export function validatePolicy(input) {
+  if (!isObject(input)) fail('policy_shape');
+  const p = structuredClone(input);
+  if (p.version !== 1 || p.protocol !== PROTOCOL) fail('policy_version');
+  if (typeof p.policyId !== 'string' || !/^[a-zA-Z0-9._-]{1,128}$/.test(p.policyId)) fail('policy_id');
+  if (!Array.isArray(p.expectedOrigins) || p.expectedOrigins.length === 0) fail('policy_origins');
+  for (const o of p.expectedOrigins) checkUrl(o, 'origins');
+
+  if (!isObject(p.release) || typeof p.release.releaseId !== 'string' || p.release.releaseId.length > 128) fail('policy_release');
+  if (!isObject(p.release.images) || Object.keys(p.release.images).length === 0) fail('policy_release_images');
+  for (const [name, digest] of Object.entries(p.release.images)) {
+    if (!/^[a-z0-9-]{1,32}$/.test(name)) fail('policy_release_images');
+    checkDigest(digest, 'release_images');
+  }
+  if (p.release.configSha256 !== null) checkHex(p.release.configSha256, 'release_config');
+
+  if (p.workloads !== null && p.workloads !== undefined) {
+    if (!Array.isArray(p.workloads) || p.workloads.length === 0 || p.workloads.length > 8) fail('policy_workloads');
+    for (const w of p.workloads) {
+      if (!isObject(w)) fail('policy_workloads');
+      checkDigest(w.imageDigest, 'workloads');
+      if (typeof w.imageReference !== 'string' || !w.imageReference.endsWith('@' + w.imageDigest)) fail('policy_workloads');
+      if (!Array.isArray(w.args) || w.args.length === 0 || w.args.some(v => typeof v !== 'string')) fail('policy_workloads');
+      if (!isObject(w.env) || Object.values(w.env).some(v => typeof v !== 'string')) fail('policy_workloads');
+    }
+  }
+
+  if (!isObject(p.freshness)) fail('policy_freshness');
+  for (const f of ['maxAgeMs', 'maxSkewMs', 'challengeTtlMs']) {
+    if (!Number.isSafeInteger(p.freshness[f]) || p.freshness[f] <= 0 || p.freshness[f] > 3600_000) fail('policy_freshness');
+  }
+
+  if (!isObject(p.evidenceSigner)) fail('policy_signer');
+  if (typeof p.evidenceSigner.keyId !== 'string' || !/^[a-zA-Z0-9._-]{1,64}$/.test(p.evidenceSigner.keyId)) fail('policy_signer');
+  if (p.evidenceSigner.publicKeyJwk !== null) {
+    const j = p.evidenceSigner.publicKeyJwk;
+    if (!isObject(j) || j.kty !== 'OKP' || j.crv !== 'Ed25519' || typeof j.x !== 'string' || Object.keys(j).sort().join(',') !== 'crv,kty,x') fail('policy_signer_key');
+    if (base64urlDecode(j.x).length !== 32) fail('policy_signer_key');
+  }
+  if (!['unbound-vm-file', 'measured-workload-key'].includes(p.evidenceSigner.custody)) fail('policy_signer_custody');
+
+  if (!isObject(p.tinfoil)) fail('policy_tinfoil');
+  checkUrl(p.tinfoil.enclaveOrigin, 'tinfoil_origin');
+  if (typeof p.tinfoil.configRepo !== 'string' || !/^[\w.-]+\/[\w.-]+$/.test(p.tinfoil.configRepo)) fail('policy_tinfoil_repo');
+  if (p.tinfoil.requireHpke !== true) fail('policy_tinfoil_hpke');
+  if (p.tinfoil.approvedReleases !== null && p.tinfoil.approvedReleases !== undefined) {
+    if (!Array.isArray(p.tinfoil.approvedReleases)) fail('policy_tinfoil_releases');
+    for (const r of p.tinfoil.approvedReleases) {
+      if (!isObject(r) || typeof r.tag !== 'string' || !HEX64.test(r.digest ?? '')) fail('policy_tinfoil_releases');
+    }
+  }
+
+  if (!isObject(p.hardware)) fail('policy_hardware');
+  if (!Array.isArray(p.hardware.models) || p.hardware.models.length === 0 ||
+      !p.hardware.models.every(v => ['GCP_AMD_SEV', 'GCP_AMD_SEV_ES', 'GCP_INTEL_TDX'].includes(v))) fail('policy_hardware_models');
+  if (p.hardware.requireSecureBoot !== true || p.hardware.requireDebugDisabled !== true) fail('policy_hardware_flags');
+  if (p.hardware.snp !== undefined && p.hardware.snp !== null) {
+    const s = p.hardware.snp;
+    if (!isObject(s)) fail('policy_snp');
+    if (typeof s.productLine !== 'string' || !/^[A-Za-z0-9]{1,32}$/.test(s.productLine)) fail('policy_snp');
+    if (s.measurementHex !== null && s.measurementHex !== undefined && !/^[0-9a-f]{96}$/.test(s.measurementHex)) fail('policy_snp_measurement');
+    if (s.amdArkSha256Hex !== null && s.amdArkSha256Hex !== undefined) checkHex(s.amdArkSha256Hex, 'snp_ark');
+    if (s.minTcbHex !== null && s.minTcbHex !== undefined && !/^[0-9a-f]{16}$/.test(s.minTcbHex)) fail('policy_snp_tcb');
+  }
+
+  if (!isObject(p.gcp)) fail('policy_gcp');
+  if (typeof p.gcp.projectId !== 'string' || !/^[\w-]{1,64}$/.test(p.gcp.projectId)) fail('policy_gcp_project');
+  checkUrl(p.gcp.workloadTokenAudience, 'policy_gcp_audience');
+
+  if (!isObject(p.storage) || p.storage.requireAttestationGatedKeyRelease !== true) fail('policy_storage');
+
+  if (!isObject(p.verifierBuild)) fail('policy_verifier_build');
+  if (p.verifierBuild.standaloneSha256Hex !== null) checkHex(p.verifierBuild.standaloneSha256Hex, 'verifier_build');
+
+  if (!isObject(p.revocation)) fail('policy_revocation');
+  if (!Array.isArray(p.revocation.revokedReleaseIds) || p.revocation.revokedReleaseIds.some(v => typeof v !== 'string')) fail('policy_revocation');
+  if (!Number.isSafeInteger(p.revocation.minSchemaVersion) || p.revocation.minSchemaVersion < 1) fail('policy_revocation');
+
+  return freezeDeep(p);
+}
+
+export async function policyFingerprint(policy) {
+  return sha256B64(canonicalJSON(policy));
+}
+
+// --- challenge ------------------------------------------------------------
+
+export async function createChallenge({policy, origin, now = Date.now()}) {
+  checkUrl(origin, 'challenge_origin');
+  if (!policy.expectedOrigins.includes(origin)) fail('challenge_origin_rejected');
+  const sessionKeyPair = await crypto.subtle.generateKey({name: 'ECDH', namedCurve: 'P-256'}, true, ['deriveBits']);
+  const sessionPublicKeyJwk = await crypto.subtle.exportKey('jwk', sessionKeyPair.publicKey);
+  const sessionPublicKey = {crv: 'P-256', kty: 'EC', x: sessionPublicKeyJwk.x, y: sessionPublicKeyJwk.y};
+  const sessionKeyThumbprint = await jwkThumbprint(sessionPublicKey);
+  const policySha256 = await policyFingerprint(policy);
+  return freezeDeep({
+    protocol: PROTOCOL,
+    id: randomToken(32),
+    nonce: randomToken(32),
+    origin,
+    policySha256,
+    sessionKeyThumbprint,
+    sessionPublicKey,
+    issuedAt: now,
+    expiresAt: now + policy.freshness.challengeTtlMs,
+    privateKey: sessionKeyPair.privateKey
+  });
+}
+
+// Domain-separated, ordered binding transcript the workload token must echo
+// as eat_nonce: platform → this browser tab’s key, origin and release policy.
+export async function expectedAttestationNonce(challenge) {
+  const transcript = [
+    PROTOCOL, challenge.id, challenge.nonce, challenge.origin, challenge.policySha256,
+    challenge.sessionKeyThumbprint, challenge.issuedAt, challenge.expiresAt
+  ];
+  return sha256B64(encoder.encode(JSON.stringify(transcript)));
+}
+
+// The 64-byte SNP REPORT_DATA value for a challenge: SHA-512 over the exact
+// ordered attestation transcript. Both the evidence service and every client
+// recompute this, so the hardware report provably commits to this browser
+// session's nonce, tab key, origin and pinned policy — replay-resistant.
+export async function expectedReportData(challenge) {
+  const nonce = await expectedAttestationNonce(challenge);
+  return new Uint8Array(await crypto.subtle.digest('SHA-512', encoder.encode(nonce)));
+}
+
+export function checkChallengeShape(challenge, policy, now = Date.now()) {
+  if (!isObject(challenge) || challenge.protocol !== PROTOCOL) fail('challenge_shape');
+  if (typeof challenge.id !== 'string' || challenge.id.length !== 43) fail('challenge_id');
+  if (typeof challenge.nonce !== 'string' || challenge.nonce.length !== 43) fail('challenge_nonce');
+  if (!policy.expectedOrigins.includes(challenge.origin)) fail('challenge_origin');
+  if (typeof challenge.sessionKeyThumbprint !== 'string' || challenge.sessionKeyThumbprint.length !== 43) fail('challenge_key');
+  if (!Number.isSafeInteger(challenge.issuedAt) || !Number.isSafeInteger(challenge.expiresAt)) fail('challenge_time');
+  if (challenge.issuedAt > now + policy.freshness.maxSkewMs) fail('challenge_future');
+  if (challenge.expiresAt <= now) fail('challenge_expired');
+  if (challenge.expiresAt - challenge.issuedAt > policy.freshness.challengeTtlMs) fail('challenge_ttl');
+}
+
+// --- Ed25519 evidence signature -------------------------------------------
+
+const SIGN_CONTEXT = 'turing-privacy-evidence-sign-v1';
+
+export async function evidenceSigningPayload(bundle) {
+  const {signature, ...rest} = bundle;
+  const body = canonicalJSON(rest);
+  return encoder.encode(SIGN_CONTEXT + ':' + body);
+}
+
+export async function signEvidence(bundle, privateKey) {
+  const data = await evidenceSigningPayload(bundle);
+  const sig = await crypto.subtle.sign('Ed25519', privateKey, data);
+  return base64urlEncode(new Uint8Array(sig));
+}
+
+export async function importEd25519Public(jwk) {
+  return crypto.subtle.importKey('jwk', jwk, {name: 'Ed25519'}, false, ['verify']);
+}
+
+export async function importEd25519Private(jwk) {
+  return crypto.subtle.importKey('jwk', jwk, {name: 'Ed25519'}, false, ['sign']);
+}
+
+async function verifyEvidenceSignature(bundle, policy) {
+  if (policy.evidenceSigner.publicKeyJwk === null) return {checked: false, ok: false, reason: 'no_signer_key_pinned'};
+  const sig = bundle?.signature;
+  if (!isObject(sig) || sig.alg !== 'Ed25519') return {checked: true, ok: false, reason: 'signature_missing'};
+  if (sig.keyId !== policy.evidenceSigner.keyId) return {checked: true, ok: false, reason: 'signature_key_substituted'};
+  let bytes;
+  try { bytes = base64urlDecode(sig.value); } catch { return {checked: true, ok: false, reason: 'signature_malformed'}; }
+  if (bytes.length !== 64) return {checked: true, ok: false, reason: 'signature_malformed'};
+  const key = await importEd25519Public(policy.evidenceSigner.publicKeyJwk);
+  const ok = await crypto.subtle.verify('Ed25519', key, bytes, await evidenceSigningPayload(bundle));
+  return {checked: true, ok, reason: ok ? 'signature_ok' : 'tampered_signature'};
+}
+
+// --- Confidential Space workload token (client-side RS256/Google JWKS) ----
+
+
+
+// --- Confidential Space workload token, verified client-side --------------
+
+// --- AMD SEV-SNP guest attestation (real hardware evidence, browser-verified) --
+//
+// Report layout and VCEK/ASK/ARK chain semantics follow the AMD SEV-SNP ABI
+// (ATTESTATION_REPORT, 1184 bytes) and the AMD KDS certificate contract. The
+// evidence service relays the report and the KDS-published certificates;
+// every signature and policy bit below is verified client-side, so a relay
+// can withhold or corrupt but never forge. The AMD ARK fingerprint pinned in
+// policy.hardware.snp.amdArkSha256Hex is the trust anchor.
+
+const SNP = Object.freeze({
+  REPORT_LEN: 0x4A0,
+  SIGNED_LEN: 0x2A0,
+  OFF: Object.freeze({
+    VERSION: 0x000, POLICY: 0x008, VMPL: 0x030, SIG_ALGO: 0x034, CURRENT_TCB: 0x038,
+    REPORT_DATA: 0x050, MEASUREMENT: 0x090, REPORT_ID: 0x140, REPORTED_TCB: 0x180,
+    CHIP_ID: 0x1A0, COMMITTED_TCB: 0x1E0, SIGNATURE: 0x2A0
+  }),
+  REPORT_DATA_LEN: 64,
+  MEASUREMENT_LEN: 48,
+  DEBUG_POLICY_BIT: 1n << 19n,
+  SIG_ALGO_ECDSA_P384_SHA384: 1
+});
+
+function b64(s, what) {
+  if (typeof s !== 'string' || !/^[A-Za-z0-9+/]*={0,2}$/.test(s)) throw new PrivacyError(what);
+  try { return Uint8Array.from(atob(s), c => c.charCodeAt(0)); } catch { throw new PrivacyError(what); }
+}
+
+function hexOf(bytes) { return [...bytes].map(b => b.toString(16).padStart(2, '0')).join(''); }
+
+// AMD signs ARK/ASK/VCEK with RSASSA-PSS but the ARK/ASK SPKI carries the
+// legacy rsaEncryption OID and NULL params, which OpenSSL/WebCrypto refuse to
+// import as PSS. Import via JWK instead: transplant ONLY the key material
+// (modulus + exponent) from the SPKI — the identity that authenticates the
+// child signature is the material itself, and the ARK is additionally pinned
+// by full-DER fingerprint in the policy.
+const OID_RSA_ENCRYPTION = '2a864886f70d010101';
+const OID_RSASSA_PSS = '2a864886f70d01010a';
+const OID_ECDSA_SHA384 = '2a8648ce3d040303';
+
+function b64url(bytes) {
+  const alpha = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_';
+  let out = '';
+  for (let i = 0; i < bytes.length; i += 3) {
+    const v = (bytes[i] << 16) | ((i + 1 < bytes.length ? bytes[i + 1] : 0) << 8) | (i + 2 < bytes.length ? bytes[i + 2] : 0);
+    out += alpha[(v >> 18) & 63] + alpha[(v >> 12) & 63];
+    if (i + 1 < bytes.length) out += alpha[(v >> 6) & 63];
+    if (i + 2 < bytes.length) out += alpha[v & 63];
+  }
+  return out;
+}
+
+function rsaSpkiToJwk(spkiDer) {
+  const outer = tlv(spkiDer, 0);
+  if (outer.tag !== 0x30 || outer.next !== spkiDer.length) throw new PrivacyError('cert_malformed');
+  const alg = tlv(spkiDer, outer.valueStart);
+  const key = tlv(spkiDer, alg.next);
+  if (alg.tag !== 0x30 || key.tag !== 0x03 || key.next !== outer.next) throw new PrivacyError('cert_malformed');
+  const oid = tlv(spkiDer, alg.valueStart);
+  if (oid.tag !== 0x06) throw new PrivacyError('cert_malformed');
+  const oidHex = hexOf(spkiDer.subarray(oid.valueStart, oid.valueStart + oid.valueLen));
+  if (oidHex !== OID_RSA_ENCRYPTION && oidHex !== OID_RSASSA_PSS) throw new PrivacyError('cert_key_algo');
+  if (key.valueLen < 1 || spkiDer[key.valueStart] !== 0) throw new PrivacyError('cert_malformed'); // bitstring: 0 unused bits
+  const inner = tlv(spkiDer, key.valueStart + 1);
+  if (inner.tag !== 0x30) throw new PrivacyError('cert_malformed');
+  const n = tlv(spkiDer, inner.valueStart);
+  const e = tlv(spkiDer, n.next);
+  if (n.tag !== 0x02 || e.tag !== 0x02 || e.next !== inner.next) throw new PrivacyError('cert_malformed');
+  const strip = (t) => {
+    let b = spkiDer.subarray(t.valueStart, t.valueStart + t.valueLen);
+    while (b.length > 1 && b[0] === 0 && !(b[1] & 0x80)) b = b.subarray(1); // DER positive-integer padding
+    if (b.length > 1 && b[0] === 0) b = b.subarray(1);
+    return b;
+  };
+  return { kty: 'RSA', alg: 'PS384', n: b64url(strip(n)), e: b64url(strip(e)), key_ops: ['verify'], ext: true };
+}
+function bytesEqual(a, b) { return a.length === b.length && a.every((v, i) => v === b[i]); }
+
+// Minimal DER TLV reader — only what a well-formed X.509 certificate needs.
+function tlv(buf, off) {
+  if (off + 2 > buf.length) throw new PrivacyError('cert_malformed');
+  const tag = buf[off];
+  let len = buf[off + 1], hlen = 2;
+  if (len & 0x80) {
+    const n = len & 0x7f;
+    if (n === 0 || n > 4 || off + 2 + n > buf.length) throw new PrivacyError('cert_malformed');
+    len = 0;
+    for (let i = 0; i < n; i++) len = (len << 8) | buf[off + 2 + i];
+    hlen = 2 + n;
+  }
+  if (off + hlen + len > buf.length) throw new PrivacyError('cert_malformed');
+  return { tag, valueStart: off + hlen, valueLen: len, next: off + hlen + len, raw: buf.subarray(off, off + hlen + len) };
+}
+
+function parseX509Time(bytes) {
+  const s = String.fromCharCode(...bytes);
+  if (!/^\d{12,14}Z$/.test(s)) throw new PrivacyError('cert_malformed');
+  if (s.length === 13) { // UTCTime: YY is 1950-2049
+    const yy = Number(s.slice(0, 2));
+    const full = yy >= 50 ? 1900 + yy : 2000 + yy;
+    return Date.UTC(full, Number(s.slice(2, 4)) - 1, Number(s.slice(4, 6)), Number(s.slice(6, 8)), Number(s.slice(8, 10)), Number(s.slice(10, 12)));
+  }
+  return Date.UTC(Number(s.slice(0, 4)), Number(s.slice(4, 6)) - 1, Number(s.slice(6, 8)), Number(s.slice(8, 10)), Number(s.slice(10, 12)), Number(s.slice(12, 14)));
+}
+
+function parseX509(derBytes) {
+  const outer = tlv(derBytes, 0);
+  if (outer.tag !== 0x30 || outer.next !== derBytes.length) throw new PrivacyError('cert_malformed');
+  const tbs = tlv(derBytes, outer.valueStart);
+  if (tbs.tag !== 0x30) throw new PrivacyError('cert_malformed');
+  const sigAlg = tlv(derBytes, tbs.next); // sequence (algorithm ignored: chain pins curve)
+  if (sigAlg.tag !== 0x30) throw new PrivacyError('cert_malformed');
+  const sig = tlv(derBytes, sigAlg.next);
+  if (sig.tag !== 0x03 || sig.valueLen < 2 || derBytes[sig.valueStart] !== 0) throw new PrivacyError('cert_malformed');
+  const sigAlgOid = tlv(derBytes, sigAlg.valueStart);
+  if (sigAlgOid.tag !== 0x06) throw new PrivacyError('cert_malformed');
+  // TBS children: [0]version, serial, sigAlg, issuer, validity, subject, spki, ...
+  let off = tbs.valueStart;
+  const first = tlv(derBytes, off);
+  // v3 certs carry an explicit [0] version; v1 certs start with the serial.
+  let cursor = first.tag === 0xA0 ? first.next : off;
+  const serial = tlv(derBytes, cursor);
+  const alg = tlv(derBytes, serial.next);
+  const issuer = tlv(derBytes, alg.next);
+  const validity = tlv(derBytes, issuer.next); if (validity.tag !== 0x30) throw new PrivacyError('cert_malformed');
+  const nb = tlv(derBytes, validity.valueStart);
+  const na = tlv(derBytes, nb.next);
+  const subject = tlv(derBytes, validity.next);
+  const spki = tlv(derBytes, subject.next);
+  if (spki.tag !== 0x30) throw new PrivacyError('cert_malformed');
+  return {
+    tbs: derBytes.subarray(outer.valueStart, tbs.next),
+    signatureDer: derBytes.subarray(sig.valueStart + 1, sig.next),
+    sigAlgOidHex: hexOf(derBytes.subarray(sigAlgOid.valueStart, sigAlgOid.valueStart + sigAlgOid.valueLen)),
+    spkiDer: spki.raw,
+    issuerDer: issuer.raw,
+    subjectDer: subject.raw,
+    notBeforeMs: parseX509Time(derBytes.subarray(nb.valueStart, nb.valueStart + nb.valueLen)),
+    notAfterMs: parseX509Time(derBytes.subarray(na.valueStart, na.valueStart + na.valueLen))
+  };
+}
+
+function ecdsaDerToP1363(der, size = 48) {
+  const seq = tlv(der, 0);
+  if (seq.tag !== 0x30 || seq.next !== der.length) throw new PrivacyError('signature_invalid');
+  const r = tlv(der, seq.valueStart);
+  const s = tlv(der, r.next);
+  if (r.tag !== 0x02 || s.tag !== 0x02 || s.next !== seq.next) throw new PrivacyError('signature_invalid');
+  const out = new Uint8Array(size * 2);
+  for (const [part, dst] of [[r, 0], [s, size]]) {
+    let bytes = der.subarray(part.valueStart, part.valueStart + part.valueLen);
+    while (bytes.length > 0 && bytes[0] === 0) bytes = bytes.subarray(1); // DER sign padding
+    if (bytes.length > size) throw new PrivacyError('signature_invalid');
+    out.set(bytes, dst + size - bytes.length);
+  }
+  return out;
+}
+
+async function verifyCert(childDer, issuerSpkiDer, now) {
+  const child = parseX509(childDer);
+  if (!(child.notBeforeMs <= now && now < child.notAfterMs)) throw new PrivacyError(now < child.notBeforeMs ? 'cert_not_yet_valid' : 'cert_expired');
+  // The real AMD chain mixes algorithms: ARK/ASK are RSA-4096 signed
+  // RSASSA-PSS/SHA-384 (salt 48); only the VCEK is ECDSA P-384, signed by the
+  // RSA ASK. Branch on the child cert's signatureAlgorithm OID.
+  let key, sigBytes, verifyAlg;
+  if (child.sigAlgOidHex === OID_ECDSA_SHA384) {
+    key = await crypto.subtle.importKey('spki', issuerSpkiDer, { name: 'ECDSA', namedCurve: 'P-384' }, false, ['verify']);
+    sigBytes = ecdsaDerToP1363(child.signatureDer);
+    verifyAlg = { name: 'ECDSA', hash: 'SHA-384' };
+  } else if (child.sigAlgOidHex === OID_RSASSA_PSS) {
+    // Node's webcrypto registers the legacy alias 'RSA-PSS' only; browsers
+    // accept the standard 'RSASSA-PSS' (and the alias). Try standard, fall
+    // back to the alias; verification uses whatever name the import took.
+    const jwk = rsaSpkiToJwk(issuerSpkiDer);
+    for (const pssName of ['RSASSA-PSS', 'RSA-PSS']) {
+      try {
+        key = await crypto.subtle.importKey('jwk', jwk, { name: pssName, hash: 'SHA-384' }, false, ['verify']);
+        break;
+      } catch (e) {
+        if (pssName === 'RSA-PSS' || e?.name !== 'NotSupportedError') throw e;
+      }
+    }
+    sigBytes = child.signatureDer;
+    verifyAlg = { name: key.algorithm.name, saltLength: 48 };
+  } else {
+    throw new PrivacyError('cert_sig_algo');
+  }
+  const ok = await crypto.subtle.verify(verifyAlg, key, sigBytes, child.tbs);
+  if (!ok) throw new PrivacyError('chain_signature_invalid');
+  return child;
+}
+
+export function parseSnpChain(chainPem) {
+  if (typeof chainPem !== 'string') fail('snp_chain_missing');
+  const re = /-----BEGIN CERTIFICATE-----([A-Za-z0-9+/=\s]+)-----END CERTIFICATE-----/g;
+  const pems = [];
+  let match;
+  while ((match = re.exec(chainPem))) {
+    pems.push(`-----BEGIN CERTIFICATE-----
+${match[1].replace(/\s/g, "")}
+-----END CERTIFICATE-----`);
+  }
+  if (pems.length !== 2) fail('snp_chain_missing');
+  const ders = pems.map(pem => Uint8Array.from(atob(pem.match(/([A-Za-z0-9+/=\s]+)-----END CERTIFICATE-----/)[1].replace(/\s/g, "")), c => c.charCodeAt(0)));
+  const certs = ders.map(parseX509);
+  const arkIndex = certs.findIndex(cert => bytesEqual(cert.issuerDer, cert.subjectDer));
+  if (arkIndex === -1) fail('snp_chain_missing');
+  return { arkPem: pems[arkIndex], askPem: pems[1 - arkIndex] };
+}
+
+// AMD ABI56860 §2.2: security versions form a component-wise partial order.
+// A newer microcode must not compensate for an older SNP/TEE/bootloader.
+export function snpTcbAtLeast(currentHex,minimumHex,productLine) {
+  if(!/^[0-9a-f]{16}$/.test(currentHex??'')||!/^[0-9a-f]{16}$/.test(minimumHex??''))throw new PrivacyError('snp_tcb_shape');
+  const shifts=['Milan','Genoa'].includes(productLine)?[0n,8n,48n,56n]:productLine==='Turin'?[0n,8n,16n,24n,56n]:null;
+  if(!shifts)throw new PrivacyError('snp_tcb_layout');
+  const current=BigInt('0x'+currentHex),minimum=BigInt('0x'+minimumHex);
+  const mask=shifts.reduce((m,shift)=>m|(255n<<shift),0n);
+  if((current&~mask)!==0n||(minimum&~mask)!==0n)throw new PrivacyError('snp_tcb_reserved');
+  return shifts.every(shift=>((current>>shift)&255n)>=((minimum>>shift)&255n));
+}
+
+export async function verifySnpEvidence(snp, { policy, expectedReportDataBytes, now, verifyVcekBindings }) {
+  if (!isObject(snp) || snp.format !== 'amd-sev-snp-v1') throw new PrivacyError('snp_shape');
+  const productLine = typeof snp.productLine === 'string' ? snp.productLine : null;
+  const pinned = isObject(policy.hardware?.snp) ? policy.hardware.snp : null;
+  if (pinned && pinned.productLine && productLine !== pinned.productLine) throw new PrivacyError('snp_product_mismatch');
+  const certs = isObject(snp.certs) ? snp.certs : {};
+  for (const f of ['arkPem', 'askPem', 'vcekPem']) if (typeof certs[f] !== 'string' || certs[f].length > 8192) throw new PrivacyError('snp_chain_missing');
+  const pemRe = /-----BEGIN CERTIFICATE-----([A-Za-z0-9+/=\s]+)-----END CERTIFICATE-----/;
+  const der = {};
+  for (const f of ['arkPem', 'askPem', 'vcekPem']) {
+    const m = pemRe.exec(certs[f]);
+    if (!m) throw new PrivacyError('snp_chain_missing');
+    der[f] = b64(m[1].replace(/\s/g, ''), 'cert_malformed');
+  }
+  const report = b64(snp.reportBase64 ?? '', 'snp_report_malformed');
+  if (report.length !== SNP.REPORT_LEN) throw new PrivacyError('snp_report_malformed');
+
+  // Chain: ARK self-signed anchor (policy-pinned fingerprint) → ASK → VCEK.
+  const ark = parseX509(der.arkPem);
+  const arkFingerprint = hexOf(new Uint8Array(await crypto.subtle.digest('SHA-256', der.arkPem)));
+  if (!pinned || !pinned.amdArkSha256Hex) throw new PrivacyError('snp_ark_unpinned');
+  if (arkFingerprint !== pinned.amdArkSha256Hex) throw new PrivacyError('snp_ark_mismatch');
+  await verifyCert(der.arkPem, ark.spkiDer, now); // genuine self-signature on the anchor
+  const ask = await verifyCert(der.askPem, ark.spkiDer, now);
+  const vcek = await verifyCert(der.vcekPem, ask.spkiDer, now);
+
+  const view = new DataView(report.buffer, report.byteOffset, report.byteLength);
+  if (view.getUint32(SNP.OFF.VERSION, true) < 2) throw new PrivacyError('snp_version');
+  if (view.getUint32(SNP.OFF.SIG_ALGO, true) !== SNP.SIG_ALGO_ECDSA_P384_SHA384) throw new PrivacyError('snp_sig_algo');
+  const reportPolicy = view.getBigUint64(SNP.OFF.POLICY, true);
+  if (policy.hardware.requireDebugDisabled !== false && (reportPolicy & SNP.DEBUG_POLICY_BIT) !== 0n) throw new PrivacyError('debug_enabled');
+  const vmpl = view.getUint32(SNP.OFF.VMPL, true);
+  if (vmpl > 3) throw new PrivacyError('snp_vmpl');
+  if (!bytesEqual(report.subarray(SNP.OFF.REPORT_DATA, SNP.OFF.REPORT_DATA + SNP.REPORT_DATA_LEN), expectedReportDataBytes)) {
+    throw new PrivacyError('snp_report_data_mismatch');
+  }
+  const measurementHex = hexOf(report.subarray(SNP.OFF.MEASUREMENT, SNP.OFF.MEASUREMENT + SNP.MEASUREMENT_LEN));
+  if (pinned?.measurementHex && measurementHex !== pinned.measurementHex) throw new PrivacyError('unexpected_measurement');
+  // slice() first: Uint8Array.reverse() mutates in place and CURRENT_TCB is
+  // inside the hardware-signed region — never mutate the report before the
+  // signature check below.
+  const currentTcbHex = hexOf(report.subarray(SNP.OFF.CURRENT_TCB, SNP.OFF.CURRENT_TCB + 8).slice().reverse());
+  const reportedTcbHex=hexOf(report.subarray(SNP.OFF.REPORTED_TCB,SNP.OFF.REPORTED_TCB+8).slice().reverse());
+  const committedTcbHex=hexOf(report.subarray(SNP.OFF.COMMITTED_TCB,SNP.OFF.COMMITTED_TCB+8).slice().reverse());
+  if(pinned?.minTcbHex && ![currentTcbHex,reportedTcbHex,committedTcbHex].every(tcb=>snpTcbAtLeast(tcb,pinned.minTcbHex,productLine)))throw new PrivacyError('snp_tcb_regression');
+  if(typeof verifyVcekBindings!=='function')throw new PrivacyError('snp_vcek_binding_verifier_required');
+  await verifyVcekBindings(snp,report);
+
+  // VCEK signature over SHA-384(report[0:0x2A0]); r,s are 72-byte little-endian.
+  const sigRegion = report.subarray(SNP.OFF.SIGNATURE, SNP.REPORT_LEN);
+  const raw = new Uint8Array(96);
+  raw.set(sigRegion.subarray(0, 72).slice().reverse().subarray(24), 0);
+  raw.set(sigRegion.subarray(72, 144).slice().reverse().subarray(24), 48);
+  const vcekKey = await crypto.subtle.importKey('spki', vcek.spkiDer, { name: 'ECDSA', namedCurve: 'P-384' }, false, ['verify']);
+  const ok = await crypto.subtle.verify({ name: 'ECDSA', hash: 'SHA-384' }, vcekKey, raw, report.subarray(0, SNP.SIGNED_LEN));
+  if (!ok) throw new PrivacyError('snp_signature_invalid');
+
+  return {
+    productLine, vmpl, measurementHex, currentTcbHex,reportedTcbHex,committedTcbHex,
+    measurementPinned: !!pinned?.measurementHex,
+    reportIdHex: hexOf(report.subarray(SNP.OFF.REPORT_ID, SNP.OFF.REPORT_ID + 32))
+  };
+}
+
+export const GOOGLE_CS_ISSUER = 'https://confidentialcomputing.googleapis.com';
+export const GOOGLE_CS_JWKS_URL = 'https://www.googleapis.com/service_accounts/v1/metadata/jwk/signer@confidentialspace-sign.iam.gserviceaccount.com';
+
+async function boundedText(response, limitBytes = 65536) {
+  if (!response.ok) fail('trust_keys_unavailable');
+  const text = await response.text();
+  if (encoder.encode(text).length > limitBytes) fail('trust_keys_too_large');
+  return text;
+}
+
+function decodeSegment(segment, what) {
+  if (typeof segment !== 'string' || segment.length > 24000) fail(`${what}_size`);
+  try { return JSON.parse(new TextDecoder().decode(base64urlDecode(segment))); } catch (e) { fail(`${what}_malformed`); }
+}
+
+// Verifies a Confidential Space OIDC workload token locally: RS256 against
+// Google's fixed public JWKS endpoint, strict claims and nonce binding.
+export function createWorkloadTokenVerifier({policy, fetchImpl = fetch, now = Date.now, audience}) {
+  if (typeof audience !== 'string') fail('policy_audience');
+  let cachedKeys = null, expiresAt = 0, loading = null;
+  function keys() {
+    if (cachedKeys && now() < expiresAt) return Promise.resolve(cachedKeys);
+    if (!loading) loading = (async () => {
+      // Never trust a jku/x5u/issuer URL carried by the token itself.
+      const response = await fetchImpl(GOOGLE_CS_JWKS_URL, {redirect: 'error', credentials: 'omit', signal: AbortSignal.timeout(5000)});
+      const jwks = JSON.parse(await boundedText(response));
+      if (!isObject(jwks) || !Array.isArray(jwks.keys) || jwks.keys.length === 0) fail('trust_keys_invalid');
+      const map = new Map();
+      for (const k of jwks.keys) {
+        if (k.kty !== 'RSA' || k.alg !== 'RS256' || k.use !== 'sig' || typeof k.kid !== 'string' || k.d) fail('trust_keys_invalid');
+        if (map.has(k.kid)) fail('trust_keys_invalid');
+        const modulus = base64urlDecode(k.n);
+        if (![256, 384, 512].includes(modulus.length) || modulus[0] < 128) fail('trust_keys_invalid');
+        map.set(k.kid, {kty: 'RSA', kid: k.kid, alg: 'RS256', use: 'sig', n: k.n, e: k.e});
+      }
+      cachedKeys = map; expiresAt = now() + 60_000;
+      return map;
+    })().finally(() => { loading = null; });
+    return loading;
+  }
+
+  return Object.freeze({
+    async verify({token, expectedNonce}) {
+      try {
+        if (typeof token !== 'string' || token.length > 24000) fail('token_size');
+        const parts = token.split('.');
+        if (parts.length !== 3) fail('token_shape');
+        const header = decodeSegment(parts[0], 'token_header');
+        if (header.alg !== 'RS256' || typeof header.kid !== 'string' || header.kid.length > 256) fail('token_header');
+        if (!Object.keys(header).every(k => ['alg', 'kid', 'typ'].includes(k)) || (header.typ && header.typ !== 'JWT')) fail('token_header');
+        const jwk = (await keys()).get(header.kid);
+        if (!jwk) fail('trust_keys_unknown_kid');
+        const key = await crypto.subtle.importKey('jwk', jwk, {name: 'RSASSA-PKCS1-v1_5', hash: 'SHA-256'}, false, ['verify']);
+        const ok = await crypto.subtle.verify('RSASSA-PKCS1-v1_5', key, base64urlDecode(parts[2]), encoder.encode(parts[0] + '.' + parts[1]));
+        if (!ok) fail('tampered_signature');
+        const c = decodeSegment(parts[1], 'token_claims');
+        if (!isObject(c)) fail('token_claims');
+        const seconds = Math.floor(now() / 1000);
+        const skew = Math.ceil(policy.freshness.maxSkewMs / 1000);
+        if (c.iss !== GOOGLE_CS_ISSUER) fail('token_issuer');
+        if (c.aud !== audience) fail('token_audience');
+        if (![c.iat, c.nbf, c.exp].every(Number.isSafeInteger)) fail('token_claim_types');
+        if (c.exp <= seconds) fail('token_expired');
+        if (c.iat > seconds + skew || c.nbf > seconds + skew) fail('token_future');
+        if (c.exp <= c.iat || c.exp - c.iat > 3600) fail('token_lifetime');
+        if (c.iat * 1000 < now() - policy.freshness.maxAgeMs) fail('token_stale');
+        if (c.eat_nonce !== expectedNonce) fail('attestation_binding_mismatch');
+        return claimsSummary(c);
+      } catch (error) {
+        if (error instanceof PrivacyError) throw error;
+        fail('token_rejected');
+      }
+    }
+  });
+}
+
+function claimsSummary(c) {
+  const cs = c.submods?.confidential_space ?? {};
+  const container = c.submods?.container ?? {};
+  const gce = c.submods?.gce ?? {};
+  return {
+    claims: c,
+    swname: c.swname, hwmodel: c.hwmodel, secboot: c.secboot, dbgstat: c.dbgstat,
+    swversion: c.swversion,
+    support: cs.support_attributes, monitoring: cs.monitoring_enabled,
+    projectId: gce.project_id, instanceId: gce.instance_id,
+    container: {
+      imageDigest: container.image_digest, imageReference: container.image_reference,
+      args: container.args, env: container.env,
+      cmdOverride: container.cmd_override, envOverride: container.env_override,
+      restartPolicy: container.restart_policy
+    }
+  };
+}
+
+export function assertPlatformClaims(summary, policy) {
+  if (summary.swname !== 'CONFIDENTIAL_SPACE') fail('workload_not_measured');
+  if (!policy.hardware.models.includes(summary.hwmodel)) fail('unexpected_hardware');
+  if (!Array.isArray(summary.support) || !summary.support.includes('USABLE') || !summary.support.includes('STABLE') || summary.support.includes('EXPERIMENTAL')) fail('workload_support');
+  if (!sameJSON(summary.monitoring, {memory: false})) fail('monitoring_enabled');
+  return {hardwareModel: summary.hwmodel, instanceId: summary.instanceId};
+}
+
+export function assertBootClaims(summary, policy) {
+  if (policy.hardware.requireDebugDisabled && summary.dbgstat !== 'disabled-since-boot') fail('debug_enabled');
+  if (policy.hardware.requireSecureBoot && summary.secboot !== true) fail('secure_boot_disabled');
+}
+
+export function assertWorkloadIdentity(summary, policy, projectId) {
+  if (summary.projectId !== projectId || typeof summary.instanceId !== 'string' || !/^\d+$/.test(summary.instanceId)) fail('workload_project');
+  const container = summary.container;
+  if (!Array.isArray(container.cmdOverride) || container.cmdOverride.length !== 0 || !sameJSON(container.envOverride, {})) fail('config_override');
+  if (!Array.isArray(policy.workloads)) fail('workload_not_pinned');
+  const match = policy.workloads.find(w =>
+    container.imageDigest === w.imageDigest && container.imageReference === w.imageReference &&
+    sameJSON(container.args, w.args) && sameJSON(container.env, w.env));
+  if (!match) fail('unexpected_workload_digest');
+  return {imageDigest: match.imageDigest};
+}
+
+// --- main evaluation ----------------------------------------------------------
+
+// One structured verdict per domain; never collapses unrelated claims into a
+// single vague "secure" result. `channel` describes how THIS verifier code
+// was delivered: same-origin JS is explicitly not an independent trust root.
+export async function evaluateEvidence({
+  bundle, policy, challenge, channel = {kind: 'same-origin'},
+  now = Date.now(), fetchImpl = fetch, seenNonces = new Map(), tinfoilVerifier = null
+}) {
+  if (!isObject(channel)) fail('channel_shape');
+  const results = {};
+  const meta = new Map(DOMAINS.map(d => [d.id, d]));
+  const report = (id, state, extra = {}) => {
+    if (!meta.has(id)) fail('domain_unknown');
+    results[id] = freezeDeep({id, state, ...meta.get(id), checkedAt: now, ...extra});
+    return results[id];
+  };
+  const dead = (id, state, reason, action) => {
+    if (results[id]) return;
+    report(id, state, {reason, action});
+  };
+
+  // D1 — verifier/client trust. Same-origin JavaScript is never a root of trust.
+  if (channel.kind === 'standalone-pinned') {
+    if (policy.verifierBuild.standaloneSha256Hex === null) {
+      report('verifier-client-trust', STATE.UNVERIFIED, {reason: 'verifier_build_unpinned',
+        action: 'Pin verifierBuild.standaloneSha256Hex in the release policy from the signed standalone manifest.'});
+    } else if (channel.sha256Hex !== policy.verifierBuild.standaloneSha256Hex) {
+      report('verifier-client-trust', STATE.FAILED, {reason: 'verifier_build_mismatch', evidence: {expected: policy.verifierBuild.standaloneSha256Hex, actual: channel.sha256Hex ?? null},
+        action: 'The open verifier does not match the pinned signed build. Close it and re-obtain the verifier through the pinned channel.'});
+    } else {
+      report('verifier-client-trust', STATE.VERIFIED, {evidence: {sha256: policy.verifierBuild.standaloneSha256Hex}});
+    }
+  } else if (channel.kind === 'same-origin') {
+    report('verifier-client-trust', STATE.UNVERIFIED, {reason: 'same_origin_not_independent',
+      action: 'Open the standalone verifier distributed through the independent pinned channel to verify this page itself.'});
+  } else if (channel.kind === 'extension-signed') {
+    report('verifier-client-trust', STATE.VERIFIED);
+  } else {
+    fail('channel_shape');
+  }
+
+  if (bundle === null || bundle === undefined) {
+    for (const d of DOMAINS) dead(d.id, STATE.UNAVAILABLE, 'evidence_missing',
+      'The evidence service did not return data. Check its reachability and restart it if necessary.');
+    return finish(results);
+  }
+  if (!isObject(bundle) || bundle.protocol !== PROTOCOL) {
+    for (const d of DOMAINS) dead(d.id, STATE.FAILED, 'bundle_shape', 'Evidence bundle is malformed; treat the service as compromised and investigate.');
+    return finish(results);
+  }
+  if (challenge !== null && !isObject(challenge)) fail('challenge_shape');
+
+  // D10 groundwork — freshness & revocation gates other domains.
+  if (!isObject(bundle) || !Number.isSafeInteger(bundle.schemaVersion)) {
+    for (const d of DOMAINS) if (d.id !== 'verifier-client-trust') dead(d.id, STATE.FAILED, 'bundle_shape');
+    return finish(results);
+  }
+  if (bundle.schemaVersion < policy.revocation.minSchemaVersion) {
+    for (const d of DOMAINS) if (d.id !== 'verifier-client-trust') dead(d.id, STATE.FAILED, 'revoked_schema',
+      'Evidence schema is below the pinned minimum. The evidence service must be upgraded.');
+    return finish(results);
+  }
+  if (policy.revocation.revokedReleaseIds.includes(policy.release.releaseId)) {
+    for (const d of DOMAINS) if (d.id !== 'verifier-client-trust') dead(d.id, STATE.FAILED, 'release_revoked',
+      'The pinned release is on the revocation list. Roll back or deploy a newer approved release.');
+    return finish(results);
+  }
+  if (!Number.isSafeInteger(bundle.issuedAt) || !Number.isSafeInteger(bundle.expiresAt) || bundle.expiresAt <= bundle.issuedAt) {
+    for (const d of DOMAINS) if (d.id !== 'verifier-client-trust') dead(d.id, STATE.FAILED, 'bundle_shape');
+    return finish(results);
+  }
+  const skew = policy.freshness.maxSkewMs;
+  if (bundle.issuedAt > now + skew) {
+    for (const d of DOMAINS) if (d.id !== 'verifier-client-trust') dead(d.id, STATE.FAILED, 'bundle_from_future',
+      'Clock skew beyond policy; check device and host clocks.');
+    return finish(results);
+  }
+  const expired = bundle.expiresAt <= now || bundle.issuedAt < now - policy.freshness.maxAgeMs;
+  if (expired) {
+    for (const d of DOMAINS) if (d.id !== 'verifier-client-trust') dead(d.id, STATE.EXPIRED, 'stale_evidence',
+      'Evidence is older than policy allows. It refreshes automatically; investigate if it does not.');
+    return finish(results);
+  }
+
+  // D2 — challenge echo, replay registry, transcript signature.
+  {
+    const echoed = bundle.challenge;
+    if (!isObject(echoed)) {
+      dead('nonce-replay', STATE.FAILED, 'challenge_echo_missing');
+    } else if (challenge === null) {
+      dead('nonce-replay', STATE.UNAVAILABLE, 'no_live_challenge');
+    } else {
+      let shapeError = null;
+      try { checkChallengeShape(echoed, policy, now); }
+      catch (error) { shapeError = error instanceof PrivacyError ? error.message : 'challenge_shape'; }
+      if (shapeError) {
+        const state = shapeError === 'challenge_expired' ? STATE.EXPIRED : STATE.FAILED;
+        dead('nonce-replay', state, shapeError, 'The echoed challenge failed shape/freshness validation.');
+      }
+      else {
+      let stated = null;
+      if (echoed.id !== challenge.id || echoed.nonce !== challenge.nonce) stated = 'wrong_nonce';
+      else if (echoed.origin !== challenge.origin) stated = 'wrong_origin';
+      else if (echoed.sessionKeyThumbprint !== challenge.sessionKeyThumbprint) stated = 'substituted_session_key';
+      else if (echoed.policySha256 !== (await policyFingerprint(policy))) stated = 'altered_policy';
+      if (stated) {
+        dead('nonce-replay', STATE.FAILED, stated, 'The evidence answers a different challenge than this tab issued. Treat as an attack signal; reconnect and re-verify.');
+      } else if (seenNonces.has(echoed.id)) {
+        dead('nonce-replay', STATE.FAILED, 'replay_detected', 'This challenge was already used. Evidence must be freshly issued per challenge.');
+      } else {
+        const sig = await verifyEvidenceSignature(bundle, policy);
+        if (!sig.checked) dead('nonce-replay', STATE.UNVERIFIED, sig.reason,
+          'Pin evidenceSigner.publicKeyJwk in the policy (custody of that key is recorded separately).');
+        else if (!sig.ok) dead('nonce-replay', STATE.FAILED, sig.reason, 'The evidence transcript failed its Ed25519 signature; treat the evidence source as compromised.');
+        else {
+          seenNonces.set(echoed.id, challenge.expiresAt);
+          for (const [id, exp] of seenNonces) if (exp <= now) seenNonces.delete(id);
+          report('nonce-replay', STATE.VERIFIED, {evidence: {challengeId: echoed.id, signerKeyId: bundle.signature.keyId, custody: policy.evidenceSigner.custody}});
+        }
+      }
+    }
+    }
+  }
+
+  // Token-backed domains D3..D6 share one verified workload token.
+  let tokenSummary = null, tokenError = null;
+  const expectedNonce = challenge ? await expectedAttestationNonce(challenge) : null;
+
+  // Real SEV-SNP guest attestation: a hardware-signed report whose
+  // REPORT_DATA provably commits to this exact browser challenge transcript.
+  let snpSummary = null, snpError = null;
+  const expectedRp = challenge ? await expectedReportData(challenge) : null;
+  if (isObject(bundle.snp) || bundle.snp === null) {
+    if (bundle.snp === null) {
+      snpError = { state: STATE.UNAVAILABLE, reason: 'snp_report_unavailable',
+        action: 'The VM did not supply a SEV-SNP attestation report. /dev/sev-guest is not available to the evidence service.' };
+    } else {
+      try {
+        snpSummary = await verifySnpEvidence(bundle.snp, { policy, expectedReportDataBytes: expectedRp, now });
+      } catch (error) {
+        const code = error instanceof PrivacyError ? deprice(error.message) : 'snp_rejected';
+        snpError = { state: code === 'cert_expired' ? STATE.EXPIRED : STATE.FAILED, reason: code,
+          action: 'The SEV-SNP attestation evidence was rejected. Treat this machine as untrusted before investigating.' };
+      }
+    }
+  }
+  if (typeof bundle.workloadToken !== 'string' || bundle.workloadToken.length === 0) {
+    tokenError = {state: STATE.UNAVAILABLE, reason: 'workload_token_missing',
+      action: 'No Confidential Space workload token was supplied. The measured launcher must present one per challenge; on the current plain N2D VM this is expected to stay red.'};
+  } else {
+    try {
+      const verifier = createWorkloadTokenVerifier({policy, fetchImpl, now: () => now, audience: policy.gcp.workloadTokenAudience});
+      tokenSummary = await verifier.verify({token: bundle.workloadToken, expectedNonce});
+    } catch (error) {
+      const code = error instanceof PrivacyError ? deprice(error.message) : 'token_rejected';
+      if (error instanceof PrivacyError && error.message === 'token_expired') tokenError = {state: STATE.EXPIRED, reason: 'token_expired'};
+      else tokenError = {state: STATE.FAILED, reason: code, action: 'Workload token rejected. Investigate before trusting this machine.'};
+    }
+  }
+
+  // D3/D4 — hardware/firmware and boot posture.
+  if (!tokenSummary) {
+    if (snpSummary) {
+      report('snp-hardware-firmware', STATE.VERIFIED, {
+        summary: 'An AMD SEV-SNP attestation report, chained to AMD\'s pinned ARK and bound to this challenge, proves the hardware, firmware TCB, debug-off state and launch measurement.',
+        evidence: {product: snpSummary.productLine, vmpl: snpSummary.vmpl, currentTcb: snpSummary.currentTcbHex, measurementPinned: snpSummary.measurementPinned, measurement: snpSummary.measurementHex}});
+    } else if (snpError) {
+      dead('snp-hardware-firmware', snpError.state, snpError.reason, snpError.action);
+    } else {
+      dead('snp-hardware-firmware', tokenError.state, tokenError.reason, tokenError.action);
+    }
+    dead('secure-boot-vtpm', tokenError.state, tokenError.reason, tokenError.action);
+  } else {
+    try {
+      const hw = assertPlatformClaims(tokenSummary, policy);
+      report('snp-hardware-firmware', STATE.VERIFIED, {evidence: {hardwareModel: hw.hardwareModel, swname: tokenSummary.swname}});
+    } catch (error) {
+      dead('snp-hardware-firmware', STATE.FAILED, error.message,
+        'Unexpected hardware/firmware claims. The machine may not be the approved confidential VM.');
+    }
+    try {
+      assertBootClaims(tokenSummary, policy);
+      report('secure-boot-vtpm', STATE.VERIFIED, {evidence: {secboot: tokenSummary.secboot, dbgstat: tokenSummary.dbgstat}});
+    } catch (error) {
+      dead('secure-boot-vtpm', STATE.FAILED, error.message,
+        error.message === 'debug_enabled'
+          ? 'Debug mode is enabled since boot. This machine cannot hold confidential data.'
+          : 'Secure Boot is disabled; measured boot posture is broken.');
+    }
+  }
+
+  // D5 — approved workload, configuration and release manifest.
+  {
+    const self = isObject(bundle.selfReported) ? bundle.selfReported : {};
+    const workload = isObject(self.workload) ? self.workload : {};
+    const selfImages = isObject(workload.images) ? workload.images : null;
+    let selfMismatch = null;
+    if (selfImages) {
+      for (const [name, digest] of Object.entries(policy.release.images)) {
+        if (selfImages[name] !== digest) { selfMismatch = {name, expected: digest, actual: selfImages[name] ?? null}; break; }
+      }
+    }
+    const configMismatch = policy.release.configSha256 !== null && workload.configSha256 !== policy.release.configSha256;
+    if (selfMismatch) {
+      report('approved-workload', STATE.FAILED, {reason: 'unexpected_workload_digest', evidence: selfMismatch,
+        action: 'A running image digest differs from the pinned release manifest.'});
+    } else if (configMismatch) {
+      dead('approved-workload', STATE.FAILED, 'unexpected_config', 'Configuration hash differs from the pinned release manifest.');
+    } else if (!tokenSummary) {
+      dead('approved-workload', tokenError.state, tokenError.reason === 'workload_token_missing' ? 'workload_not_measured' : tokenError.reason,
+        'Without a measured launcher token, running-container identity is only self-reported and cannot be trusted. Move HAPI/Codex into a Confidential Space measured launcher image to make this provable.');
+    } else if (!Array.isArray(policy.workloads)) {
+      dead('approved-workload', STATE.UNVERIFIED, 'workloads_not_pinned',
+        'Pin policy.workloads to the measured launcher image digest/reference to prove the exact running workload.');
+    } else {
+      try {
+        const match = assertWorkloadIdentity(tokenSummary, policy, policy.gcp.projectId);
+        report('approved-workload', STATE.VERIFIED, {evidence: {imageDigest: match.imageDigest, releaseId: policy.release.releaseId}});
+      } catch (error) {
+        dead('approved-workload', STATE.FAILED, error.message,
+          'Running workload does not match the pinned approved manifest. Investigate the machine before use.');
+      }
+    }
+  }
+
+  // Fresh report-data proves a challenge commitment, not that HAPI's real
+  // connection uses attested encryption keys. Key confirmation is absent.
+  if (snpError) {
+    dead('session-key-binding', snpError.state, snpError.reason ?? 'session_not_bound', snpError.action);
+  } else {
+    dead('session-key-binding', STATE.UNVERIFIED, 'channel_key_confirmation_missing',
+      'Fresh challenge binding is checked, but application-channel key confirmation is not implemented. HTTPS is encrypted; its endpoint is not cryptographically bound to an approved VM workload.');
+  }
+
+  // D7 — LUKS / attestation-gated key release (mounted disk proves nothing).
+  {
+    const storage = isObject(bundle.selfReported?.storage) ? bundle.selfReported.storage : null;
+    const gate = storage?.keyReleaseGate;
+    if (!storage) dead('luks-storage', STATE.UNAVAILABLE, 'storage_state_missing');
+    else if (gate === 'post-attestation-seal' && results['approved-workload']?.state === STATE.VERIFIED && storage.luksMounted === true) {
+      report('luks-storage', STATE.VERIFIED, {evidence: {luksMounted: true, keyReleaseGate: gate}});
+    } else if (gate === 'post-attestation-seal') {
+      dead('luks-storage', STATE.FAILED, 'storage_gate_unbacked', 'Evidence claims attestation-gated key release but the workload is not proven. Contradiction treated as failure.');
+    } else {
+      dead('luks-storage', STATE.UNVERIFIED, gate === 'local-passphrase' ? 'local_passphrase_gate' : 'key_release_not_proven',
+        'A mounted LUKS volume does not prove approved-workload-only key release. Smallest fix: store the LUKS key release behind a launcher-sealed secret gated on the workload token.');
+    }
+  }
+
+  // D8 — Tinfoil enclave measurement/release via official client verification.
+  let tinfoilVerified = false;
+  {
+    const tinfoil = isObject(bundle.tinfoil) ? bundle.tinfoil : {};
+    if (typeof tinfoilVerifier === 'function' && tinfoil.mode === 'official-client') {
+      try {
+        const verdict = await tinfoilVerifier({policy, fetchImpl});
+        if (!isObject(verdict) || verdict.securityVerified !== true) fail('tinfoil_verification_failed');
+        if (Array.isArray(policy.tinfoil.approvedReleases) && policy.tinfoil.approvedReleases.length > 0) {
+          const digest = verdict.measurementDigest;
+          if (typeof digest !== 'string' || !policy.tinfoil.approvedReleases.some(r => r.digest === digest)) fail('tinfoil_release_mismatch');
+        }
+        tinfoilVerified = true;
+        report('tinfoil-enclave', STATE.VERIFIED, {evidence: {measurementDigest: verdict.measurementDigest ?? null, configRepo: policy.tinfoil.configRepo}});
+      } catch (error) {
+        dead('tinfoil-enclave', STATE.FAILED, error instanceof PrivacyError ? error.message : 'tinfoil_verification_failed',
+          'Official Tinfoil client-side enclave verification failed. Do not send prompts until it is green.');
+      }
+    } else if (tinfoil.mode === 'server-relayed') {
+      dead('tinfoil-enclave', STATE.UNVERIFIED, 'server_relayed_not_independent',
+        'The HAPI server relayed a Tinfoil verification document; that is not independent proof. Run the official tinfoil client verification in this verifier against the pinned enclave origin.');
+    } else {
+      dead('tinfoil-enclave', STATE.UNAVAILABLE, 'tinfoil_evidence_missing',
+        'No Tinfoil verification evidence. Integrate the official tinfoil client verification in this verifier.');
+    }
+  }
+
+  // D9 — Tinfoil HPKE inference channel.
+  {
+    const transport = isObject(bundle.selfReported?.transport) ? bundle.selfReported.transport : {};
+    if (transport.plaintextTransportDetected === true) {
+      dead('tinfoil-hpke-channel', STATE.FAILED, 'plaintext_fallback_detected', 'A plaintext or non-attested inference path was detected. This is a hard failure.');
+    } else if (tinfoilVerified && results['approved-workload']?.state === STATE.VERIFIED && transport.inferenceEgress === 'tinfoil-hpke' && policy.tinfoil.requireHpke) {
+      report('tinfoil-hpke-channel', STATE.VERIFIED, {evidence: {inferenceEgress: transport.inferenceEgress, hpkeRequired: true}});
+    } else if (tinfoilVerified) {
+      dead('tinfoil-hpke-channel', STATE.UNVERIFIED, 'egress_not_proven', 'Enclave verified, but the VM→Tinfoil transport encryption claim is unproven.');
+    } else {
+      dead('tinfoil-hpke-channel', STATE.UNVERIFIED, 'hpke_not_verified',
+        'HPKE to the inference enclave is only proven together with the official enclave verification (D8).');
+    }
+  }
+
+  // D10 — already gated above for bundle-level staleness; restate as verified.
+  report('evidence-freshness', STATE.VERIFIED, {evidence: {issuedAt: bundle.issuedAt, expiresAt: bundle.expiresAt, schemaVersion: bundle.schemaVersion}});
+
+  return finish(results);
+
+  function finish(domains) {
+    const ordered = DOMAINS.map(d => domains[d.id]);
+    const priority = [STATE.FAILED, STATE.EXPIRED, STATE.UNAVAILABLE, STATE.UNVERIFIED];
+    let overall = STATE.VERIFIED;
+    for (const s of priority) if (ordered.some(d => d.state === s)) { overall = s; break; }
+    return freezeDeep({
+      protocol: PROTOCOL,
+      overall,
+      green: overall === STATE.VERIFIED,
+      checkedAt: now,
+      challengeId: challenge?.id ?? null,
+      domains: ordered
+    });
+  }
+}
+
+function deprice(message) {
+  return typeof message === 'string' && /^[a-z0-9_]{3,64}$/.test(message) ? message : 'token_rejected';
+}

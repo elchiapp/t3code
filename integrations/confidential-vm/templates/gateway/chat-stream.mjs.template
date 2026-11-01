@@ -1,0 +1,36 @@
+import {randomUUID} from 'node:crypto';
+import {fromChatResponse,responseEvents} from './responses-chat.mjs';
+// Translate actual incremental Chat frames into Responses frames. Tool JSON is
+// completed and schema-normalized before execution, preserving the old guard.
+export async function* chatResponseStream(body,model,custom,names,schemas) {
+ const id='resp_'+randomUUID();const message={role:'assistant',content:'',reasoning_content:'',tool_calls:[]};
+ let seq=0,next=0,answerIndex,reasonIndex,usage,finishReason=null;
+ const answerId='msg_'+randomUUID(),reasonId='rs_'+randomUUID();const calls=new Map();
+ const event=(type,value)=>`event: ${type}\ndata: ${JSON.stringify({type,sequence_number:seq++,...value})}\n\n`;
+ yield event('response.created',{response:{id,object:'response',model,status:'in_progress',output:[]}});
+ const decoder=new TextDecoder();let pending='';
+ async function* frames(){for await(const bytes of body){pending+=decoder.decode(bytes,{stream:true});pending=pending.replaceAll('\r\n','\n');if(pending.length>2*1024*1024)throw Error('Chat frame limit');let at;while((at=pending.indexOf('\n\n'))>=0){const block=pending.slice(0,at);pending=pending.slice(at+2);const data=block.split('\n').filter(l=>l.startsWith('data:')).map(l=>l.slice(5).trimStart()).join('\n');if(data)yield data;}}pending+=decoder.decode();if(pending.trim())throw Error('Incomplete Chat frame');}
+ for await(const data of frames()) {
+  if(data==='[DONE]')break;const packet=JSON.parse(data);if(packet.error)throw Error('Chat upstream failed');if(packet.usage)usage=packet.usage;
+  const choice=packet.choices?.[0];if(!choice)continue;if(choice.finish_reason)finishReason=choice.finish_reason;const delta=choice.delta??{};
+  const reasoning=delta.reasoning_content??delta.reasoning??delta.reasoning_text;
+  if(typeof reasoning==='string'&&reasoning){
+   if(reasonIndex===undefined){reasonIndex=next++;yield event('response.output_item.added',{output_index:reasonIndex,item:{id:reasonId,type:'reasoning',summary:[],content:[],status:'in_progress'}});}
+   message.reasoning_content+=reasoning;yield event('response.reasoning_text.delta',{item_id:reasonId,output_index:reasonIndex,content_index:0,delta:reasoning});
+  }
+  if(typeof delta.content==='string'&&delta.content){
+   if(answerIndex===undefined){answerIndex=next++;yield event('response.output_item.added',{output_index:answerIndex,item:{id:answerId,type:'message',role:'assistant',content:[],status:'in_progress'}});yield event('response.content_part.added',{item_id:answerId,output_index:answerIndex,content_index:0,part:{type:'output_text',text:'',annotations:[]}});}
+   message.content+=delta.content;yield event('response.output_text.delta',{item_id:answerId,output_index:answerIndex,content_index:0,delta:delta.content});
+  }
+  for(const call of delta.tool_calls??[]){if(!Number.isInteger(call.index)||call.index<0||call.index>63)throw Error('Invalid tool index');const value=calls.get(call.index)??{id:'',type:'function',function:{name:'',arguments:''}};if(call.id)value.id+=call.id;if(call.function?.name)value.function.name+=call.function.name;if(call.function?.arguments)value.function.arguments+=call.function.arguments;if(value.function.arguments.length>256*1024||value.function.name.length>256)throw Error('Tool frame limit');calls.set(call.index,value);}
+  if(message.content.length+message.reasoning_content.length>2*1024*1024)throw Error('Chat response limit');
+ }
+ if(!finishReason)throw Error('Chat stream ended before completion');
+ message.tool_calls=[...calls.entries()].sort((a,b)=>a[0]-b[0]).map(([,v])=>v);
+ const response=fromChatResponse({model,choices:[{message,finish_reason:finishReason}],usage},custom,names,schemas);response.id=id;
+ const output=[];
+ if(reasonIndex!==undefined){const item={id:reasonId,type:'reasoning',summary:[],content:[{type:'reasoning_text',text:message.reasoning_content}],status:'completed'};output[reasonIndex]=item;yield event('response.reasoning_text.done',{item_id:reasonId,output_index:reasonIndex,content_index:0,text:message.reasoning_content});yield event('response.output_item.done',{output_index:reasonIndex,item});}
+ if(answerIndex!==undefined){const item=response.output.find(i=>i.type==='message');item.id=answerId;output[answerIndex]=item;yield event('response.output_text.done',{item_id:answerId,output_index:answerIndex,content_index:0,text:message.content});yield event('response.content_part.done',{item_id:answerId,output_index:answerIndex,content_index:0,part:item.content[0]});yield event('response.output_item.done',{output_index:answerIndex,item});}
+ for(const item of response.output.filter(i=>!['message','reasoning'].includes(i.type))){const single={...response,output:[item]};for(const block of responseEvents(single).trim().split('\n\n')){const value=JSON.parse(block.split('\ndata: ')[1]);if(['response.created','response.completed'].includes(value.type))continue;const {type,sequence_number,...rest}=value;yield event(type,{...rest,output_index:next});}output[next++]=item;}
+ response.output=output;yield event(response.status==='incomplete'?'response.incomplete':'response.completed',{response});
+}

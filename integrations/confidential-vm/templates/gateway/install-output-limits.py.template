@@ -1,0 +1,121 @@
+#!/usr/bin/env python3
+"""Apply the owner-requested output-limit fix to the existing inference service."""
+from pathlib import Path
+import hashlib
+import json
+import os
+import re
+import subprocess
+import time
+
+ROOT = Path(__file__).resolve().parent
+BASE = 'sha256:330836520b33daf00c7690f6cf88c6f70cfa67f60580c36e165ecd9aa3be09ed'
+CONTAINER = 'turing-codex-inference-1'
+CONFIG = Path('/opt/turing/codex/compose.yaml')
+OVERRIDE = Path('/opt/turing/workspace/codex.override.yaml')
+ENVIRONMENT = Path('/opt/turing/workspace/images.env')
+TAG = 'turing-gateway:output-limits-20261028'
+
+
+def run(args, **kwargs):
+    return subprocess.run(args, check=True, capture_output=True, text=True, **kwargs)
+
+
+def digest(path):
+    return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def inspect():
+    return json.loads(run(['docker', 'inspect', CONTAINER]).stdout)[0]
+
+
+def contract(info):
+    return {
+        'mounts': sorted((m['Type'], m['Source'], m['Destination'], m['RW']) for m in info['Mounts']),
+        'networks': sorted(info['NetworkSettings']['Networks']),
+        'user': info['Config']['User'],
+        'entrypoint': info['Config']['Entrypoint'],
+        'command': info['Config']['Cmd'],
+        # Compare values privately; never put credential-bearing environment values in receipts.
+        'environment': sorted(info['Config']['Env']),
+        'host': {k: info['HostConfig'].get(k) for k in ['ReadonlyRootfs', 'CapDrop', 'CapAdd', 'SecurityOpt', 'PidsLimit', 'Memory', 'Tmpfs', 'PortBindings', 'RestartPolicy']},
+    }
+
+
+assert os.geteuid() == 0, 'Run as root over the existing authenticated SSH channel'
+assert Path('/srv/turing').is_mount(), 'Encrypted data mount unavailable'
+before = inspect()
+assert before['Image'] == BASE, 'Active image changed; refuse stale rollout'
+manifest = json.loads((ROOT / 'source-manifest.json').read_text())
+for entry in manifest['files']:
+    p = ROOT / entry['path']
+    assert p.resolve().is_relative_to(ROOT) and digest(p) == entry['sha256'], 'Source verification failed'
+assert not (ROOT / 'receipt.json').exists(), 'Immutable rollout receipt already exists'
+old_config = CONFIG.read_bytes()
+old_override = digest(OVERRIDE)
+old_env = digest(ENVIRONMENT)
+assert not (ROOT / 'compose.before.yaml').exists(), 'Immutable rollback file already exists'
+(ROOT / 'compose.before.yaml').write_bytes(old_config)
+(ROOT / 'compose.before.yaml').chmod(0o600)
+build = ['docker', 'build', '--network', 'none', '--pull=false', '-f', str(ROOT / 'Dockerfile.output-limits'), '-t', TAG, str(ROOT)]
+result = run(build, env={**os.environ, 'DOCKER_BUILDKIT': '0'})
+(ROOT / 'build.log').write_text(result.stdout + result.stderr)
+image = run(['docker', 'image', 'inspect', '--format', '{{.Id}}', TAG]).stdout.strip()
+checks = run(['docker', 'run', '--rm', '--network', 'none', '--pull', 'never', '--cap-drop', 'ALL', '--security-opt', 'no-new-privileges', '--pids-limit', '64', '--memory', '256m', '--cpus', '1', '--entrypoint', 'node', '--volume', str(ROOT) + ':/source:ro', image, '--test', '/source/output-limits.test.mjs', '/source/chat-stream.test.mjs'])
+(ROOT / 'tests.log').write_text(checks.stdout + checks.stderr)
+assert CONFIG.read_bytes() == old_config and digest(OVERRIDE) == old_override and digest(ENVIRONMENT) == old_env, 'Configuration changed during build'
+
+# Guard all T3 turns immediately before replacing its shared inference gateway.
+import sqlite3
+db = sqlite3.connect('file:{{VM_T3_ROOT}}/state/userdata/statev2.sqlite?mode=ro', uri=True)
+active = db.execute("select count(*) from orchestration_v2_projection_provider_turns where status not in ('completed','failed','interrupted','cancelled')").fetchone()[0]
+db.close()
+assert active == 0, 'Wait for active T3 work before replacing inference'
+
+text = old_config.decode()
+begin = text.index('  inference:')
+end = text.index('\n  codex:', begin)
+section, count = re.subn(r'(?m)^    image: .+$', '    image: ' + image, text[begin:end])
+assert count == 1, 'Inference image selector not unique'
+updated = (text[:begin] + section + text[end:]).encode()
+command = ['docker', 'compose', '-p', 'turing-codex', '--env-file', str(ENVIRONMENT), '-f', str(CONFIG), '-f', str(OVERRIDE), 'up', '-d', '--no-deps', '--no-build', '--pull', 'never', 'inference']
+
+
+def replace_config(data):
+    pending = CONFIG.with_suffix('.output-limit.pending')
+    pending.write_bytes(data)
+    pending.chmod(CONFIG.stat().st_mode & 0o777)
+    pending.replace(CONFIG)
+
+
+try:
+    replace_config(updated)
+    run(command)
+    for _ in range(90):
+        after = inspect()
+        if after['State'].get('Health', {}).get('Status') == 'healthy':
+            break
+        time.sleep(1)
+    else:
+        raise RuntimeError('New inference service did not become healthy')
+    assert after['Image'] == image, 'Unexpected deployed image'
+    assert contract(before) == contract(after), 'Runtime contract changed'
+    assert digest(OVERRIDE) == old_override and digest(ENVIRONMENT) == old_env, 'Other configuration changed'
+except BaseException:
+    replace_config(old_config)
+    run(command)
+    raise
+
+receipt = {
+    'base_image': BASE,
+    'image': image,
+    'scope': 'Only inference image selector and two JavaScript modules changed',
+    'runtime_contract_preserved': True,
+    'compose_before_sha256': hashlib.sha256(old_config).hexdigest(),
+    'compose_after_sha256': digest(CONFIG),
+    'source_manifest_sha256': digest(ROOT / 'source-manifest.json'),
+    'tests': '16 gateway output-limit and streaming regressions passed in deployed runtime',
+    'behavior': 'Interactive requests use provider default or caller output bound; evaluation ledger retains8192 guard',
+}
+(ROOT / 'receipt.json').write_text(json.dumps(receipt, indent=2) + '\n')
+print(json.dumps(receipt, indent=2))

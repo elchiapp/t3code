@@ -1,0 +1,63 @@
+import {test} from 'node:test';
+import assert from 'node:assert/strict';
+import {createInferenceGateway} from './gateway-v2.mjs';
+import {toChatRequest} from './responses-chat.mjs';
+
+const pricing={inputTokenPricePer1M:1,outputTokenPricePer1M:1,requestPrice:0};
+const model=(id,endpoints)=>({id,name:id,type:'chat',tool_calling:true,multimodal:false,reasoning:false,context_window:131072,pricing,endpoints});
+const catalog={data:[model('native',['/v1/responses']),model('chat',['/v1/chat/completions'])]};
+
+async function gateway({guarded=false,verified=true}={},run){
+  const calls=[],reservations=[];
+  const server=createInferenceGateway({apiKey:'synthetic',ledger:guarded?{reserve:(...args)=>reservations.push(args),status:()=>({})}:null,fetchImpl:async(url,init)=>{
+    if(url.endsWith('/verification-document'))return Response.json({securityVerified:verified});
+    if(url.endsWith('/v1/models'))return Response.json(catalog);
+    const request=JSON.parse(init.body);calls.push({url,request,redirect:init.redirect,authorization:init.headers.Authorization});
+    const allowance=request.max_output_tokens??request.max_tokens??65536;
+    const complete=allowance>=9000;
+    if(url.endsWith('/v1/chat/completions'))return Response.json({model:'chat',choices:[{message:{content:'synthetic long answer'},finish_reason:complete?'stop':'length'}],usage:{prompt_tokens:10,completion_tokens:Math.min(allowance,9000),total_tokens:10+Math.min(allowance,9000)}});
+    return Response.json({status:complete?'completed':'incomplete',...(complete?{}:{incomplete_details:{reason:'max_output_tokens'}}),output:[],usage:{output_tokens:Math.min(allowance,9000)}});
+  }});
+  await new Promise(resolve=>server.listen(0,'127.0.0.1',resolve));
+  const url=`http://127.0.0.1:${server.address().port}/v1/responses`;
+  try{await run(async(payload)=>fetch(url,{method:'POST',body:JSON.stringify(payload)}),calls,reservations);}
+  finally{server.closeAllConnections();await new Promise(resolve=>server.close(resolve));}
+}
+
+for(const model of ['native','chat']){
+  test(`interactive ${model} completes above 8192 using provider default`,async()=>gateway({},async(send,calls)=>{
+    const response=await send({model,input:'synthetic long generation'});
+    assert.equal(response.status,200);const result=await response.json();
+    assert.equal(result.status,'completed');assert.equal(result.usage.output_tokens,9000);
+    assert.ok(!Object.hasOwn(calls[0].request,'max_output_tokens'));assert.ok(!Object.hasOwn(calls[0].request,'max_tokens'));
+    assert.equal(calls[0].redirect,'error');assert.equal(calls[0].authorization,'Bearer synthetic');
+    if(model==='native')assert.equal(calls[0].request.store,false);
+  }));
+  test(`interactive ${model} honors both large and deliberately small caller limits`,async()=>gateway({},async(send,calls)=>{
+    for(const limit of [65536,128]){
+      const response=await send({model,input:'synthetic',max_output_tokens:limit});
+      assert.equal(response.status,200);const result=await response.json();
+      assert.equal(calls.at(-1).request[model==='native'?'max_output_tokens':'max_tokens'],limit);
+      assert.equal(result.status,limit===128?'incomplete':'completed');
+    }
+  }));
+}
+test('bounded evaluation still clamps and reserves the actual 8192-token bound',async()=>gateway({guarded:true},async(send,calls,reservations)=>{
+  for(const requested of [undefined,65536]){
+    const response=await send({model:'native',input:'synthetic',...(requested===undefined?{}:{max_output_tokens:requested})});
+    assert.equal(response.status,200);await response.json();assert.equal(calls.at(-1).request.max_output_tokens,8192);
+  }
+  assert.equal(reservations.length,2);assert.ok(reservations.every(([amount])=>amount>=8192/1e6));
+}));
+test('invalid caller limits fail before inference forwarding',async()=>gateway({},async(send,calls)=>{
+  for(const max_output_tokens of [0,-1,0.5,'65536',9007199254740992])assert.equal((await send({model:'native',input:'synthetic',max_output_tokens})).status,400);
+  assert.equal(calls.length,0);
+}));
+test('lifting the interactive cap never bypasses failed attestation',async()=>gateway({verified:false},async(send,calls)=>{
+  assert.equal((await send({model:'native',input:'synthetic',max_output_tokens:65536})).status,503);
+  assert.equal(calls.length,0);
+}));
+test('Chat adapter leaves an omitted output bound to the provider',()=>{
+  assert.ok(!Object.hasOwn(toChatRequest({model:'chat',input:'synthetic'}).request,'max_tokens'));
+  assert.equal(toChatRequest({model:'chat',input:'synthetic',max_output_tokens:65536}).request.max_tokens,65536);
+});

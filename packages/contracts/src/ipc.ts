@@ -1003,6 +1003,9 @@ export const SystemSettingsPaneSchema = Schema.Literals(["full-disk-access"]);
 export type SystemSettingsPane = typeof SystemSettingsPaneSchema.Type;
 
 export interface DesktopBridge {
+  getAttestationStatus?: (
+    request: import("./attestation.ts").AttestationRequest,
+  ) => Promise<import("./attestation.ts").AttestationStatus>;
   getAppBranding: () => DesktopAppBranding | null;
   getRelayTelemetryEnabled?: () => boolean;
   getPathForFile?: (file: File) => string;

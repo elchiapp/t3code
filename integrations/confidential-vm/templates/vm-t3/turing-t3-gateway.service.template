@@ -1,0 +1,23 @@
+[Unit]
+Description=T3 loopback access to the existing verified Tinfoil gateway
+After=docker.service turing-codex.service
+Requires=docker.service
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/python3 {{VM_T3_ROOT}}/current/gateway-forward.py
+Restart=on-failure
+RestartSec=3
+UMask=0077
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+MemoryMax=128M
+TasksMax=64
+StandardOutput=null
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

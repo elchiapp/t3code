@@ -137,6 +137,7 @@ export async function runAttachmentUploadCycle<E, RE>(input: {
   readonly upload: AttachmentCreateUploadUrlInput;
   readonly resolveUploadUrl: (relativeUrl: string) => string | null;
   readonly transport: (url: string) => AttachmentByteUpload;
+  readonly authorizeTransfer: (url: string) => Promise<void>;
   readonly onMinted?: (attachmentId: string) => "continue" | "cancel";
   readonly onTransferStart?: (abort: () => void) => void;
 }): Promise<AttachmentUploadCycleResult> {
@@ -175,9 +176,10 @@ export async function runAttachmentUploadCycle<E, RE>(input: {
     };
   }
 
-  const transfer = input.transport(url);
-  input.onTransferStart?.(transfer.abort);
   try {
+    await input.authorizeTransfer(url);
+    const transfer = input.transport(url);
+    input.onTransferStart?.(transfer.abort);
     await transfer.done;
   } catch (error) {
     return { status: "failed", step: "transfer", attachmentId, error };

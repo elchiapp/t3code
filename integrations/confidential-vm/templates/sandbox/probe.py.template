@@ -1,0 +1,47 @@
+from pathlib import Path
+import subprocess,json,os,selectors,time
+BASE=Path('{{VM_T3_ROOT}}')
+FIXTURE=BASE/'workspaces/sandbox-acceptance'
+PROJECT=FIXTURE/'project'
+PROJECT.mkdir(parents=True,exist_ok=True)
+subprocess.run(['/usr/bin/git','init','--quiet',str(PROJECT)],check=True)
+(PROJECT/'inside.txt').write_text('sandbox_fixture\n')
+(FIXTURE/'outside.txt').write_text('UNCHANGED\n')
+env={**os.environ,'CODEX_HOME':str(BASE/'providers/codex-tinfoil'),'PATH':str(BASE/'sandbox/bin')+':'+str(BASE/'current/bin')+':/usr/local/bin:/usr/bin:/bin'}
+p=subprocess.Popen([str(BASE/'current/bin/codex'),'app-server'],stdin=subprocess.PIPE,stdout=subprocess.PIPE,stderr=subprocess.DEVNULL,text=True,env=env,cwd=PROJECT)
+def request(i,method,params):
+    p.stdin.write(json.dumps({'id':i,'method':method,'params':params})+'\n');p.stdin.flush()
+    deadline=time.monotonic()+25
+    while time.monotonic()<deadline:
+        ready=selectors.DefaultSelector();ready.register(p.stdout,selectors.EVENT_READ)
+        if not ready.select(5):ready.close();continue
+        ready.close();line=p.stdout.readline()
+        if not line:raise RuntimeError('Codex app-server exited')
+        r=json.loads(line)
+        if r.get('id')==i:
+            if 'error' in r:raise RuntimeError(json.dumps(r['error']))
+            return r['result']
+    raise TimeoutError(method)
+try:
+    request(1,'initialize',{'clientInfo':{'name':'t3-sandbox-acceptance','version':'1'},'capabilities':{'experimentalApi':True}})
+    p.stdin.write(json.dumps({'method':'initialized'})+'\n');p.stdin.flush()
+    cases=[
+        ('read_and_rg',['/bin/sh','-c','ls -d . && rg sandbox_fixture inside.txt'],0),
+        ('workspace_write',['/usr/bin/python3','-c',"from pathlib import Path; Path('created.txt').write_text('OK')"],0),
+        ('outside_write',['/usr/bin/python3','-c',"from pathlib import Path; Path('../outside.txt').write_text('BAD')"],1),
+        ('restricted_network',['/usr/bin/python3','-c',"import socket,sys\ntry:\n s=socket.socket(); s.settimeout(2); s.connect(('1.1.1.1',443))\nexcept OSError:print('NETWORK_BLOCKED')\nelse:sys.exit(1)"],0),
+    ]
+    results=[]
+    for i,(name,command,expected) in enumerate(cases,2):
+        result=request(i,'command/exec',{'command':command,'cwd':str(PROJECT),'sandboxPolicy':{'type':'workspaceWrite','writableRoots':[str(PROJECT)],'networkAccess':False},'timeoutMs':10000,'outputBytesCap':2000})
+        results.append({'case':name,'exit_code':result['exitCode'],'stdout':result.get('stdout','')[:600],'stderr':result.get('stderr','')[:600]})
+        assert result['exitCode']==expected, results[-1]
+    assert (FIXTURE/'outside.txt').read_text()=='UNCHANGED\n'
+    assert (PROJECT/'created.txt').read_text()=='OK'
+    receipt={'checks':results,'outside_file_unchanged':True,'no_inference_used':True}
+    print(json.dumps(receipt,indent=2))
+    (BASE/'runtime/sandbox-acceptance.json').write_text(json.dumps(receipt,indent=2)+'\n')
+finally:
+    p.terminate()
+    try:p.wait(timeout=5)
+    except subprocess.TimeoutExpired:p.kill();p.wait()

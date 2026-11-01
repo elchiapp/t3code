@@ -1,0 +1,78 @@
+import http from 'node:http';
+import https from 'node:https';
+import tls from 'node:tls';
+import {X509Certificate,createHash} from 'node:crypto';
+
+export function spkiHash(raw){return createHash('sha256').update(new X509Certificate(raw).publicKey.export({type:'spki',format:'der'})).digest('hex');}
+export function pinnedAgent(expected,options={}){
+  if(!/^[a-f0-9]{64}$/.test(expected))throw Error('Verified TLS key is missing');
+  return new https.Agent({...options,keepAlive:true,maxCachedSessions:0,checkServerIdentity(host,cert){return tls.checkServerIdentity(host,cert)??(spkiHash(cert.raw)===expected?undefined:Error('The TLS key differs from the attestation commitment'));}});
+}
+async function readBody(req,limit){
+  const chunks=[];let bytes=0;
+  for await(const chunk of req){bytes+=chunk.length;if(bytes>limit)throw Error('Request exceeds the size limit');chunks.push(chunk);}
+  return Buffer.concat(chunks);
+}
+const escape=s=>String(s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+export function renderStatus(status){
+  const summary=status.ready?'Required hardware, connection-key and inference checks passed. Verification remains partial.':status.phase==='expired'?'Verification expired while idle. It runs again automatically before the next request.':status.phase==='checking'?'Verification is running. New requests wait for the result.':'Requests are blocked until the required verification passes.';
+  const titles={hardware:'VM hardware and firmware',inference:'Tinfoil enclave and release',tls_key_commitment:'Connection key commitment',proxy_workload:'Proxy software measurement',key_custody:'Exclusive key custody',inference_route:'Attested inference routing'};
+  const rows=Object.entries(titles).map(([id,title])=>`<tr><td>${title}</td><td>${escape(status.checks?.[id]?.state??'not configured')}</td><td>${escape(status.checks?.[id]?.detail??status.checks?.[id]?.scope??'No accepted proof for this check.')}</td></tr>`).join('');
+  return `<!doctype html><meta charset="utf-8"><meta name="viewport" content="width=device-width"><title>T3 Attestation</title><style>body{font:16px system-ui;max-width:1000px;margin:40px auto;padding:20px;color:#14212b;background:#f7f9fc}h1{font-size:30px}table{width:100%;border-collapse:collapse;background:white}td{border:1px solid #ccd4df;padding:14px;vertical-align:top}p{line-height:1.5}.state{padding:18px;background:#fff0cf;border-radius:8px}button{padding:10px 18px;margin-top:20px}</style><h1>T3 Attestation</h1><p class="state">${summary}</p><p>The verifier runs on this laptop. It does not accept a server’s verified flag as proof.</p><table>${rows}</table><p>${escape(status.error??'')}</p><form method="post" action="/refresh"><button>Check again</button></form><p>Hardware signatures and a key commitment do not prove which proxy software runs or that its private key cannot be copied.</p>`;
+}
+export function createGateServer({gate,forward,metadata,modelOrigin,port=3420,maxBytes=30*1024*1024}){
+  let modelRequestsReceived=0;
+  const allowedOrigins=new Set([`http://127.0.0.1:${port}`,`http://localhost:${port}`,'http://127.0.0.1:3219','t3code://app']);
+  return http.createServer({requestTimeout:300000,headersTimeout:15000},async(req,res)=>{
+    const json=(status,value)=>{if(!res.headersSent){res.writeHead(status,{'content-type':'application/json','cache-control':'no-store'});res.end(JSON.stringify(value));}else res.destroy();};
+    const allowedHosts=new Set([`127.0.0.1:${req.socket.localPort}`,`localhost:${req.socket.localPort}`]);
+    if(!allowedHosts.has(req.headers.host)){json(403,{error:{message:'Unexpected local host'}});return;}
+    if(req.headers.origin&&!allowedOrigins.has(req.headers.origin)){json(403,{error:{message:'Origin is not authorized'}});return;}
+    try{
+      if(req.method==='GET'&&req.url==='/status'){json(200,{...gate.status(),modelOrigin,modelRequestsReceived});return;}
+      if(req.method==='GET'&&req.url==='/'){
+        res.writeHead(200,{'content-type':'text/html; charset=utf-8','cache-control':'no-store','content-security-policy':"default-src 'none'; style-src 'unsafe-inline'; form-action 'self'; frame-ancestors 'self'"});res.end(renderStatus(gate.status()));return;
+      }
+      if(req.method==='POST'&&req.url==='/refresh'){
+        try{await gate.refresh();}catch{}res.writeHead(303,{location:'/','cache-control':'no-store'});res.end();return;
+      }
+      if(req.method==='GET'&&['/v1/models','/codex/models'].includes(req.url)){json(200,await metadata(req.url));return;}
+      if(req.method!=='POST'||!['/v1/responses','/v1/audio/transcriptions'].includes(req.url)){json(404,{error:{message:'Unsupported endpoint'}});return;}
+      modelRequestsReceived++;
+      if(req.url==='/v1/responses'&&!/^application\/json(?:;|$)/i.test(req.headers['content-type']??'')){json(415,{error:{message:'JSON content type is required'}});return;}
+      if(Number(req.headers['content-length']??0)>maxBytes){json(413,{error:{message:'Request exceeds the size limit'}});return;}
+      let body;try{body=await readBody(req,maxBytes);}catch{json(413,{error:{message:'Request exceeds the size limit'}});return;}
+      let receipt;try{receipt=await gate.authorize();}catch(error){json(503,{error:{message:error.message+'; open http://127.0.0.1:'+port+'/ for evidence status.'}});return;}
+      if(req.aborted||res.destroyed)return;
+      if(!gate.valid(receipt)){json(503,{error:{message:'Attestation expired before forwarding'}});return;}
+      await forward({req,res,body,receipt,isCurrent:()=>gate.valid(receipt)});
+    }catch{json(502,{error:{message:'Attested inference connection failed; no automatic retry was made'}});}
+  });
+}
+
+export function forwardOnce(origin){
+  const target=new URL(origin);if(target.protocol!=='https:')throw Error('Inference requires HTTPS');
+  let agent,digest;
+  return ({req,res,body,receipt,isCurrent})=>new Promise((resolve,reject)=>{
+    if(digest!==receipt.tlsSpkiSha256){agent?.destroy();agent=pinnedAgent(receipt.tlsSpkiSha256);digest=receipt.tlsSpkiSha256;}
+    const headers={'content-length':body.length};if(req.headers['content-type'])headers['content-type']=req.headers['content-type'];
+    const outgoing=https.request(new URL(req.url,target),{method:'POST',agent,headers},upstream=>{
+      const responseHeaders={'cache-control':'no-store','x-accel-buffering':'no'};
+      for(const key of ['content-type','content-length'])if(upstream.headers[key])responseHeaders[key]=upstream.headers[key];
+      res.writeHead(upstream.statusCode??502,responseHeaders);upstream.on('error',reject);upstream.pipe(res);upstream.on('end',resolve);
+    });
+    outgoing.on('socket',socket=>{
+      const send=()=>{
+        try{
+          const cert=socket.getPeerCertificate();
+          if(!isCurrent()||!cert.raw||spkiHash(cert.raw)!==receipt.tlsSpkiSha256||req.aborted||res.destroyed)throw Error('Proof or TLS key is not current');
+          outgoing.end(body);
+        }catch(error){outgoing.destroy(error);}
+      };
+      if(socket.connecting)socket.once('secureConnect',send);else send();
+    });
+    outgoing.setTimeout(330000,()=>outgoing.destroy(Error('Inference connection timed out')));
+    outgoing.on('error',reject);
+    res.once('close',()=>{if(!res.writableFinished)outgoing.destroy(Error('Client disconnected'));});
+  });
+}

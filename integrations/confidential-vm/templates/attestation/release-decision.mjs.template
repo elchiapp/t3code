@@ -1,0 +1,14 @@
+import {createApprovalManager} from './release-approvals.mjs';
+import {inferenceProof} from './crypto-verifier.mjs';
+
+const [action,tag,digest,...extra]=process.argv.slice(2);
+if(extra.length||!['review','approve','revoke'].includes(action)||(action!=='review'&&(!tag||!digest))){
+  console.error('Usage: node release-decision.mjs review | approve TAG SHA256 | revoke TAG SHA256');process.exit(2);
+}
+if(action==='review'){
+  console.log(JSON.stringify(await inferenceProof(),null,2));
+}else{
+  const manager=createApprovalManager({verify:()=>inferenceProof({ownerApprovals:[]})});
+  console.log(JSON.stringify(await manager.change(action,{tag,digest}),null,2));
+  console.log('This changes one local release pin. It does not activate a T3 provider or approve missing VM evidence.');
+}

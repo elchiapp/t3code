@@ -1,0 +1,18 @@
+import {test} from 'node:test';
+import assert from 'node:assert/strict';
+import {once} from 'node:events';
+import {createProofServer,validateRequest,reportBinding} from './vm-proof-server.mjs';
+import {commitment,MODEL_ORIGIN} from './endpoint-binding.mjs';
+import {expectedReportData} from './verifier/verifier-core.mjs';
+const key='1'.repeat(64),stamp=1700000000000;
+const make=()=>({version:1,nonce:'a'.repeat(43),modelOrigin:MODEL_ORIGIN,tlsSpkiSha256:key,challenge:{protocol:'turing-privacy-evidence-v1',origin:'{{EVIDENCE_ORIGIN}}',id:'b'.repeat(43),nonce:commitment('a'.repeat(43),key),policySha256:'c'.repeat(43),sessionKeyThumbprint:'d'.repeat(43),issuedAt:stamp,expiresAt:stamp+60000}});
+test('collector binding equals the independently computed verifier binding',async()=>assert.equal(reportBinding(make().challenge),Buffer.from(await expectedReportData(make().challenge)).toString('hex')));
+test('wrong endpoint keys and stale challenges are rejected',()=>{
+  assert.throws(()=>validateRequest(make(),'2'.repeat(64),stamp));assert.throws(()=>validateRequest(make(),key,stamp+60000));const changed=make();changed.challenge.nonce='x'.repeat(43);assert.throws(()=>validateRequest(changed,key,stamp));
+});
+async function setup(t,options){let quoted=0;const server=createProofServer({authenticate:async()=>true,getKey:async()=>key,getQuote:async()=>{quoted++;return {format:'synthetic test only'};},now:()=>stamp,minIntervalMs:0,...options});server.listen(0,'127.0.0.1');await once(server,'listening');t.after(()=>{server.closeAllConnections();server.close();});return {quoted:()=>quoted,post:(body=make(),headers={})=>fetch(`http://127.0.0.1:${server.address().port}/proof`,{method:'POST',headers:{'content-type':'application/json',...headers},body:JSON.stringify(body)})};}
+test('unauthorized peers never reach the quote device',async t=>{const x=await setup(t,{authenticate:async()=>false});assert.equal((await x.post()).status,403);assert.equal(x.quoted(),0);});
+test('a browser origin cannot exercise the device',async t=>{const x=await setup(t,{});assert.equal((await x.post(make(),{Origin:'https://foreign.invalid'})).status,403);assert.equal(x.quoted(),0);});
+test('an arbitrary client-selected TLS key never reaches the device',async t=>{const x=await setup(t,{});const b=make();b.tlsSpkiSha256='2'.repeat(64);assert.equal((await x.post(b)).status,400);assert.equal(x.quoted(),0);});
+test('a valid authorized challenge returns public evidence only',async t=>{const x=await setup(t,{});const r=await x.post();assert.equal(r.status,200);const b=await r.json();assert.equal(b.tlsSpkiSha256,key);assert.deepEqual(b.snp,{format:'synthetic test only'});assert.equal(x.quoted(),1);});
+test('quote errors return no hardware-verified flag',async t=>{const x=await setup(t,{getQuote:async()=>{throw Error('synthetic failure');}});const r=await x.post();assert.equal(r.status,503);const b=await r.json();assert.equal(b.verified,undefined);assert.equal(b.snp,undefined);});

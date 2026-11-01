@@ -1,0 +1,6 @@
+#!/bin/sh
+set -eu
+export T3CODE_HOME="{{LOCAL_T3_ROOT}}/server"
+export T3CODE_TELEMETRY_ENABLED=false
+export DO_NOT_TRACK=1
+exec {{NODE_PATH}} {{T3_SOURCE_ROOT}}/apps/server/dist/bin.mjs "$@"

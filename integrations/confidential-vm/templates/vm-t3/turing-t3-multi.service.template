@@ -1,0 +1,39 @@
+[Unit]
+Description=T3 Code multi-provider environment
+After=network-online.target tailscaled.service turing-data.service turing-t3-gateway.service
+Wants=network-online.target turing-t3-gateway.service
+RequiresMountsFor=/srv/turing
+
+[Service]
+Type=simple
+User=turing
+Group=turing
+WorkingDirectory={{VM_T3_ROOT}}/workspaces
+Environment=T3CODE_TELEMETRY_ENABLED=false
+Environment=T3CODE_DISABLE_AUTO_UPDATE=true
+Environment=DO_NOT_TRACK=1
+Environment=DISABLE_AUTOUPDATER=1
+Environment=CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1
+Environment=OTEL_SDK_DISABLED=true
+Environment=XDG_CACHE_HOME={{VM_T3_ROOT}}/cache
+Environment=XDG_DATA_HOME={{VM_T3_ROOT}}/data
+Environment=PATH={{VM_T3_ROOT}}/current/bin:/usr/local/bin:/usr/bin:/bin
+ExecStart={{VM_T3_ROOT}}/current/bin/node {{VM_T3_ROOT}}/current/server/bin.mjs serve --base-dir {{VM_T3_ROOT}}/state --host 127.0.0.1 --port 3218 --no-browser
+Restart=on-failure
+RestartSec=3
+TimeoutStopSec=30
+UMask=0077
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths={{VM_T3_ROOT}}
+PrivateTmp=true
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK
+MemoryMax=3G
+TasksMax=1024
+LimitCORE=0
+StandardOutput=append:{{VM_T3_ROOT}}/runtime/server.log
+StandardError=append:{{VM_T3_ROOT}}/runtime/server.log
+
+[Install]
+WantedBy=multi-user.target

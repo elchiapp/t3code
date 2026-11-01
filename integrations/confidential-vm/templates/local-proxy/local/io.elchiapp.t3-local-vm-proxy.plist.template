@@ -1,0 +1,40 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>EnvironmentVariables</key>
+	<dict>
+		<key>DO_NOT_TRACK</key>
+		<string>1</string>
+		<key>PATH</key>
+		<string>{{USER_HOME}}/.n/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+		<key>T3CODE_DISABLE_AUTO_UPDATE</key>
+		<string>true</string>
+		<key>T3CODE_TELEMETRY_ENABLED</key>
+		<string>false</string>
+	</dict>
+	<key>KeepAlive</key>
+	<true/>
+	<key>Label</key>
+	<string>io.elchiapp.t3-local-vm-proxy</string>
+	<key>ProcessType</key>
+	<string>Interactive</string>
+	<key>ProgramArguments</key>
+	<array>
+		<string>{{PYTHON_PATH}}</string>
+		<string>{{LOCAL_T3_ROOT}}/server-run.py</string>
+	</array>
+	<key>RunAtLoad</key>
+	<true/>
+	<key>StandardErrorPath</key>
+	<string>{{LOCAL_T3_ROOT}}/server.log</string>
+	<key>StandardOutPath</key>
+	<string>{{LOCAL_T3_ROOT}}/server.log</string>
+	<key>ThrottleInterval</key>
+	<integer>10</integer>
+	<key>Umask</key>
+	<integer>63</integer>
+	<key>WorkingDirectory</key>
+	<string>{{LOCAL_T3_ROOT}}/projects/local-browser</string>
+</dict>
+</plist>

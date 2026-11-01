@@ -1,0 +1,107 @@
+import {createServer} from 'node:http';
+import {Readable} from 'node:stream';
+import {validateCatalog,normalizeReasoning,chatModels,codexCatalog,hasImageInput} from './catalog.mjs';
+import {upperBoundCost} from './budget.mjs';
+import {toChatRequest,fromChatResponse,responseEvents} from './responses-chat.mjs';
+import {chatResponseStream} from './chat-stream.mjs';
+import {cleanKimiResponse,kimiSseTransform} from './kimi-framing.mjs';
+import {INFERENCE_TIMEOUTS,requestLifetime} from './request-lifetime.mjs';
+const LOCAL_PROXY='http://127.0.0.1:3301';
+const MAX_BODY=30*1024*1024;
+export function createInferenceGateway({apiKey,ledger,fetchImpl=fetch,timeLimits=INFERENCE_TIMEOUTS}) {
+  if(!apiKey)throw new Error('Provider key is required');
+  let catalog,expires=0;
+  const fail=(res,status,message)=>{if(!res.headersSent){res.writeHead(status,{'Content-Type':'application/json','Cache-Control':'no-store'});res.end(JSON.stringify({error:{message}}));}else res.destroy();};
+  async function verified(signal){
+    const r=await fetchImpl(`${LOCAL_PROXY}/verification-document`,{signal,redirect:'error'});
+    if(!r.ok||(await r.json()).securityVerified!==true)throw new Error('Tinfoil attestation is not verified');
+  }
+  async function models(signal){
+    if(catalog&&Date.now()<expires)return catalog;
+    const r=await fetchImpl(`${LOCAL_PROXY}/v1/models`,{signal,redirect:'error'});
+    if(!r.ok)throw new Error('Verified model catalog unavailable');
+    catalog=validateCatalog(await r.json());expires=Date.now()+60000;return catalog;
+  }
+  return createServer(async(req,res)=>{
+    const controller=new AbortController(),lifetime=requestLifetime(controller,timeLimits);
+    req.once('aborted',()=>controller.abort());res.once('close',()=>{lifetime.close();controller.abort();});
+    try{
+      const read=req.method==='GET'&&['/healthz','/v1/models','/codex/models','/budget'].includes(req.url);
+      const audio=req.method==='POST'&&req.url==='/v1/audio/transcriptions';
+      const responses=req.method==='POST'&&req.url==='/v1/responses';
+      if(!read&&!audio&&!responses){fail(res,404,'Unsupported endpoint');return;}
+      await verified(controller.signal);
+      // Null keeps existing HAPI clients from rendering an obsolete test limit.
+      if(req.url==='/healthz'){res.setHeader('Content-Type','application/json');res.end(JSON.stringify({status:'ok',inferenceAttested:true,budgetEnforced:!!ledger,budget:ledger?.status()??null}));return;}
+      if(req.url==='/budget'){res.setHeader('Content-Type','application/json');res.end(JSON.stringify(ledger?{...ledger.status(),enforced:true}:{enforced:false}));return;}
+      const list=await models(controller.signal);
+      if(read){res.setHeader('Content-Type','application/json');res.setHeader('Cache-Control','no-store');res.end(JSON.stringify(req.url==='/codex/models'?codexCatalog(list):list));return;}
+      const chunks=[];let bytes=0;
+      for await(const chunk of req){bytes+=chunk.length;if(bytes>MAX_BODY){fail(res,413,'Request too large');return;}chunks.push(chunk);}
+      const body=Buffer.concat(chunks);
+      let payload,model,outBody,endpoint=req.url,headers={'Authorization':`Bearer ${apiKey}`};
+      if(audio){
+        const form=await new Request('http://local/audio',{method:'POST',headers:{'Content-Type':req.headers['content-type']??''},body}).formData();
+        model=list.data.find(m=>m.id===String(form.get('model')??'')&&m.endpoints?.includes('/v1/audio/transcriptions'));
+        if(!model){fail(res,400,'Unknown transcription model');return;}
+        const file=form.get('file');if(!file||typeof file==='string'||file.size>25*1024*1024){fail(res,400,'Invalid audio file');return;}
+        outBody=new FormData();outBody.set('model',model.id);outBody.set('file',file,file.name||'audio.webm');
+        if(form.get('language'))outBody.set('language',String(form.get('language')));
+        payload={};
+      }else{
+        try{payload=JSON.parse(body.toString('utf8'));}catch{fail(res,400,'Invalid JSON');return;}
+        model=chatModels(list).find(m=>m.id===payload.model);
+        if(!model){fail(res,400,'Choose an available Tinfoil chat model');return;}
+        if(payload.background||payload.previous_response_id){fail(res,400,'Background/stored Responses are disabled');return;}
+        if(!model.multimodal&&hasImageInput(payload.input)){fail(res,400,`${model.name} does not support images; select a Vision model`);return;}
+        payload.store=false;
+        if(payload.max_output_tokens!=null&&(!Number.isSafeInteger(payload.max_output_tokens)||payload.max_output_tokens<1)){
+          fail(res,400,'max_output_tokens must be a positive safe integer');return;
+        }
+        // The 8K generation guard belongs to the bounded evaluation ledger.
+        // Owner interactive traffic uses the selected model's native default,
+        // or preserves an explicit caller limit, including limits above 8K.
+        if(ledger)payload.max_output_tokens=Math.min(payload.max_output_tokens??8192,8192);
+        else if(payload.max_output_tokens==null)delete payload.max_output_tokens;
+        const needsFlatTools=payload.tools?.length&&['gpt-oss-120b','gpt-oss-safeguard-120b','deepseek-v4-1-flash'].includes(model.id);
+        endpoint=model.endpoints.includes('/v1/responses')&&!needsFlatTools?'/v1/responses':'/v1/chat/completions';
+        payload=normalizeReasoning(payload,model,endpoint);headers['Content-Type']='application/json';
+        // Kimi's Responses adapter accepts system instructions but rejects the
+        // developer role. Preserve content/order and leave tool/history data alone.
+        if(model.id==='kimi-k3'&&endpoint==='/v1/responses'&&Array.isArray(payload.input))
+          payload.input=payload.input.map(item=>item?.role==='developer'&&(!item.type||item.type==='message')?{...item,role:'system'}:item);
+      }
+      let custom,names,schemas;
+      if(!audio){
+        if(endpoint==='/v1/chat/completions'){const mapped=toChatRequest(payload);outBody=JSON.stringify(mapped.request);custom=mapped.custom;names=mapped.names;schemas=mapped.schemas;}
+        else outBody=JSON.stringify(payload);
+      }
+      if(ledger)try{ledger.reserve(upperBoundCost(model,payload,bytes,{audio}),model.id,endpoint);}catch(error){fail(res,402,error.message);return;}
+      if(responses)lifetime.startInference();
+      let upstream=await fetchImpl(LOCAL_PROXY+endpoint,{method:'POST',headers,body:outBody,signal:controller.signal,redirect:'error'});
+      if(!upstream.ok||!upstream.body){
+        // Upstream error text may repeat prompts, attachments or credentials.
+        // Preserve actionable status without propagating untrusted content.
+        await upstream.body?.cancel().catch(()=>{});
+        fail(res,upstream.status>=400?upstream.status:502,`Tinfoil ${model.id} request failed (HTTP ${upstream.status})`);return;
+      }
+      if(responses){
+        lifetime.progress();
+        upstream=new Response(upstream.body.pipeThrough(new TransformStream({transform(chunk,output){lifetime.progress();output.enqueue(chunk);}})),{status:upstream.status,headers:upstream.headers});
+      }
+      if(endpoint==='/v1/chat/completions'){
+        if(payload.stream){res.writeHead(200,{'Content-Type':'text/event-stream','Cache-Control':'no-store','X-Accel-Buffering':'no'});for await(const frame of chatResponseStream(upstream.body,model.id,custom,names,schemas)){if(!res.write(frame))await new Promise(resolve=>{const ready=()=>{res.off('drain',ready);res.off('close',ready);resolve();};res.once('drain',ready);res.once('close',ready);});if(res.destroyed)throw Error('Client closed');}res.end();return;}
+        const result=fromChatResponse(await upstream.json(),custom,names,schemas);
+        res.writeHead(200,{'Content-Type':payload.stream?'text/event-stream':'application/json','Cache-Control':'no-store'});
+        res.end(payload.stream?responseEvents(result):JSON.stringify(result));return;
+      }
+      if(model.id==='kimi-k3'&&!upstream.headers.get('content-type')?.includes('text/event-stream')){
+        res.writeHead(200,{'Content-Type':'application/json','Cache-Control':'no-store'});res.end(JSON.stringify(cleanKimiResponse(await upstream.json())));return;
+      }
+      res.writeHead(upstream.status,{'Content-Type':upstream.headers.get('content-type')??'application/json','Cache-Control':'no-store','X-Accel-Buffering':'no'});
+      const stream=Readable.fromWeb(upstream.body);stream.once('error',()=>res.destroy());
+      if(model.id==='kimi-k3'){const clean=kimiSseTransform();clean.once('error',()=>res.destroy());stream.pipe(clean).pipe(res);}else stream.pipe(res);
+    }catch(error){const safe=/^Unsupported (tool|input)/.test(error.message??'');fail(res,safe?400:503,error.message?.includes('attestation')||safe?error.message:'Confidential transport unavailable');}
+    finally{if(res.writableEnded)lifetime.close();}
+  });
+}

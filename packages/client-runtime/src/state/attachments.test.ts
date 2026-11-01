@@ -55,9 +55,30 @@ const uploadInput: AttachmentCreateUploadUrlInput = {
 };
 
 describe("runAttachmentUploadCycle", () => {
+  it("does not open the byte transport when device verification fails", async () => {
+    let transfers = 0;
+    const result = await runAttachmentUploadCycle({
+      authorizeTransfer: async () => {
+        throw new Error("Attestation failed");
+      },
+      registry,
+      createUploadUrl: makeCreateUploadUrl("pending-proof"),
+      remove,
+      environmentId,
+      upload: uploadInput,
+      resolveUploadUrl: () => "https://environment.test/upload",
+      transport: () => {
+        transfers++;
+        return { done: Promise.resolve(), abort: () => {} };
+      },
+    });
+    expect(result.status).toBe("failed");
+    expect(transfers).toBe(0);
+  });
   it("deletes the fresh mint when the caller cancels at onMinted", async () => {
     removeCalls.length = 0;
     const result = await runAttachmentUploadCycle({
+      authorizeTransfer: async () => {},
       registry,
       createUploadUrl: makeCreateUploadUrl("pending-cancelled"),
       remove,
@@ -77,6 +98,7 @@ describe("runAttachmentUploadCycle", () => {
   it("keeps the minted id on transfer failure so the caller can retry or release", async () => {
     removeCalls.length = 0;
     const result = await runAttachmentUploadCycle({
+      authorizeTransfer: async () => {},
       registry,
       createUploadUrl: makeCreateUploadUrl("pending-failed"),
       remove,

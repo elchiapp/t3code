@@ -132,7 +132,7 @@ const browserTestProject = {
     browser: {
       enabled: true,
       headless: true,
-      provider: playwright(),
+      provider: playwright({ launchOptions: { chromiumSandbox: true } }),
       instances: [{ browser: "chromium" }],
       screenshotFailures: false,
       commands: {

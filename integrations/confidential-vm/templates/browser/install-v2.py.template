@@ -1,0 +1,54 @@
+from pathlib import Path
+import hashlib,json,os,pwd,shutil,sqlite3,subprocess,zipfile
+ROOT=Path(__file__).resolve().parent
+BASE=Path('{{VM_T3_ROOT}}')
+VERSION='156.0.8078.70'
+def run(args,**kw):return subprocess.run(args,check=True,capture_output=True,text=True,**kw)
+assert os.geteuid()==0
+archive=ROOT/'chrome-headless-shell-linux64.zip'
+assert archive.stat().st_size==126646931
+assert hashlib.sha256(archive.read_bytes()).hexdigest()=='a313da592261ff1e342c1e507d315f25b1809006c0508f77ce86151d464d4ccb'
+target=BASE/'state/tools/chrome-headless-shell/linux64'/VERSION
+account=pwd.getpwnam('turing')
+with zipfile.ZipFile(archive) as z:
+    for entry in z.infolist():
+        prefix='chrome-headless-shell-linux64/'
+        assert entry.filename.startswith(prefix)
+        relative=entry.filename[len(prefix):]
+        assert '..' not in Path(relative).parts and not Path(relative).is_absolute()
+        dest=target/relative
+        assert dest.resolve().is_relative_to(target)
+        if entry.is_dir():dest.mkdir(parents=True,exist_ok=True)
+        else:
+            dest.parent.mkdir(parents=True,exist_ok=True)
+            assert (entry.external_attr>>16)&0o170000 in [0,0o100000]
+            if dest.exists():
+                with z.open(entry) as src:assert hashlib.sha256(src.read()).hexdigest()==hashlib.sha256(dest.read_bytes()).hexdigest()
+            else:
+                with z.open(entry) as src,dest.open('xb') as out:shutil.copyfileobj(src,out)
+            dest.chmod(((entry.external_attr>>16)&0o777) or 0o644)
+for p in [BASE/'state/tools',*(BASE/'state/tools').rglob('*')]:os.chown(p,account.pw_uid,account.pw_gid)
+setup=run([str(BASE/'current/bin/t3'),'browser','setup','--base-dir',str(BASE/'state')],env={**os.environ,'PATH':str(BASE/'current/bin')+':/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin','DEBIAN_FRONTEND':'noninteractive','NEEDRESTART_MODE':'l','SUDO_USER':'turing'})
+(ROOT/'setup.log').write_text(setup.stdout+setup.stderr)
+profile=Path('/etc/apparmor.d/t3-chrome-headless-shell')
+text=profile.read_text()
+text=text.replace('/**/tools/chrome-headless-shell/',str(BASE/'state/tools/chrome-headless-shell')+'/')
+profile.write_text(text)
+run(['apparmor_parser','-r',str(profile)])
+settings=BASE/'state/userdata/settings.json'
+old=settings.read_bytes();(ROOT/'settings.before.json').write_bytes(old);(ROOT/'settings.before.json').chmod(0o600)
+s=json.loads(old)
+s['enableAgentBrowserAccess']=True
+s['defaultRuntimeMode']='auto-accept-edits'
+for override in s.get('projectSettingsOverrides',{}).values():
+    if 'enableAgentBrowserAccess' in override:override['enableAgentBrowserAccess']=True
+    if 'defaultRuntimeMode' in override:override['defaultRuntimeMode']='auto-accept-edits'
+db=sqlite3.connect('file:'+str(BASE/'state/userdata/statev2.sqlite')+'?mode=ro',uri=True)
+assert db.execute("select count(*) from orchestration_v2_projection_provider_turns where status not in ('completed','failed','interrupted','cancelled')").fetchone()[0]==0, 'Wait for active work'
+db.close()
+run(['systemctl','stop','turing-t3-multi.service'])
+pending=settings.with_suffix('.browser.pending')
+pending.write_text(json.dumps(s,indent=2)+'\n');os.chown(pending,account.pw_uid,account.pw_gid);pending.chmod(0o600);pending.replace(settings)
+run(['systemctl','start','turing-t3-multi.service'])
+receipt={'chrome_version':VERSION,'chrome_archive_sha256':hashlib.sha256(archive.read_bytes()).hexdigest(),'chrome_binary_sha256':hashlib.sha256((target/'chrome-headless-shell').read_bytes()).hexdigest(),'browser_sandbox_enabled':True,'browser_profile_sha256':hashlib.sha256(profile.read_bytes()).hexdigest(),'agent_browser_access':True,'default_runtime_mode':s['defaultRuntimeMode'],'settings_before_sha256':hashlib.sha256(old).hexdigest(),'settings_after_sha256':hashlib.sha256(settings.read_bytes()).hexdigest(),'service':run(['systemctl','is-active','turing-t3-multi.service']).stdout.strip()}
+(ROOT/'install-receipt.json').write_text(json.dumps(receipt,indent=2)+'\n');print(json.dumps(receipt,indent=2))

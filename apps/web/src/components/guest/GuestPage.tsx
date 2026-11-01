@@ -1,3 +1,6 @@
+import { clientAttestation } from "@t3tools/client-runtime/attestation";
+import { useOriginAttestation } from "../../attestation/useOriginAttestation";
+import { AttestationIndicator } from "../chat/AttestationIndicator";
 import {
   EnvironmentId,
   GUEST_MESSAGE_MAX_LENGTH,
@@ -138,6 +141,7 @@ async function postGuest(
   body: typeof GuestRedeemRequest.Encoded | FormData,
 ): Promise<string | null> {
   try {
+    await clientAttestation.authorize(window.location.origin);
     const response = await fetch(
       `${GUEST_ROUTE_PREFIX}/${path}`,
       body instanceof FormData
@@ -296,13 +300,14 @@ function NameForm({
   readonly credential: string;
   readonly onJoined: () => void;
 }) {
+  const attestation = useOriginAttestation(window.location.origin);
   const [name, setName] = useState("");
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const submit = async (event: FormEvent) => {
     event.preventDefault();
     const trimmed = name.trim();
-    if (trimmed === "" || submitting) return;
+    if (!attestation.isCurrent() || trimmed === "" || submitting) return;
     setSubmitting(true);
     const failure = await postGuest("redeem", { credential, name: trimmed });
     setSubmitting(false);
@@ -311,10 +316,16 @@ function NameForm({
   };
   return (
     <form className="m-auto flex w-full max-w-xs flex-col gap-3 p-6" onSubmit={submit}>
+      <AttestationIndicator
+        status={attestation.status}
+        canSend={attestation.canSend}
+        onRetry={attestation.retry}
+      />
       <h1 className="text-base font-medium">Join a shared thread</h1>
       <label className="flex flex-col gap-1.5 text-sm" htmlFor="guest-name">
         Your name
         <Input
+          disabled={!attestation.canSend}
           id="guest-name"
           autoFocus
           autoComplete="name"
@@ -328,7 +339,7 @@ function NameForm({
           {error}
         </p>
       ) : null}
-      <Button type="submit" disabled={submitting || name.trim() === ""}>
+      <Button type="submit" disabled={!attestation.canSend || submitting || name.trim() === ""}>
         Join
       </Button>
       <p className="text-xs text-muted-foreground">
@@ -607,6 +618,7 @@ function GuestComposer({
   readonly shareId: GuestShareView["shareId"];
   readonly model: GuestThreadModel;
 }) {
+  const attestation = useOriginAttestation(window.location.origin);
   const [text, setText] = useState("");
   const [files, setFiles] = useState<ReadonlyArray<StagedFile>>([]);
   const [sending, setSending] = useState(false);
@@ -626,7 +638,7 @@ function GuestComposer({
   };
   const send = async () => {
     const trimmed = text.trim();
-    if ((trimmed === "" && files.length === 0) || sending) return;
+    if (!attestation.isCurrent() || (trimmed === "" && files.length === 0) || sending) return;
     setSending(true);
     const sentFiles = files;
     const form = new FormData();
@@ -714,6 +726,7 @@ function GuestComposer({
         </ul>
       ) : null}
       <textarea
+        disabled={!attestation.canSend}
         aria-label="Message"
         placeholder="Message"
         rows={2}
@@ -747,13 +760,15 @@ function GuestComposer({
           </p>
         ) : (
           <p className="min-w-0 flex-1 truncate text-xs text-muted-foreground">
-            The owner approves each message
+            {attestation.canSend
+              ? "Attestation verified. The owner approves each message"
+              : attestation.status.message}
           </p>
         )}
         <button
           type="submit"
           aria-label="Send"
-          disabled={sending || (text.trim() === "" && files.length === 0)}
+          disabled={!attestation.canSend || sending || (text.trim() === "" && files.length === 0)}
           className="flex size-8 shrink-0 cursor-pointer items-center justify-center rounded-full bg-message-action text-message-action-foreground shadow-xs hover:bg-message-action-hover focus-visible:outline-2 focus-visible:outline-ring disabled:pointer-events-none disabled:opacity-64"
         >
           <ArrowUpIcon aria-hidden className="size-4" />

@@ -74,6 +74,8 @@ function unwrapEnsureSshEnvironmentResult(result: unknown) {
 }
 
 contextBridge.exposeInMainWorld("desktopBridge", {
+  getAttestationStatus: (request) =>
+    ipcRenderer.invoke(IpcChannels.GET_ATTESTATION_STATUS_CHANNEL, request),
   getAppBranding: () => {
     const result = ipcRenderer.sendSync(IpcChannels.GET_APP_BRANDING_CHANNEL);
     if (typeof result !== "object" || result === null) {

@@ -1,0 +1,18 @@
+import {writeFileSync} from 'node:fs';
+import {AttestationGate} from './gate-state.mjs';
+import {createGateServer,forwardOnce} from './gate-server.mjs';
+import {collectEvidence} from './collect-evidence.mjs';
+import {MODEL_ORIGIN} from './endpoint-binding.mjs';
+import {boundedJson} from './crypto-verifier.mjs';
+import {readApprovals} from './release-approvals.mjs';
+
+const gate=new AttestationGate({collect:collectEvidence,scope:'hardware-and-inference',policyCurrent:receipt=>{
+  const approvals=readApprovals();const inference=receipt.checks.inference;
+  return inference.approvalSource!=='owner_device'||approvals.some(r=>r.tag===inference.releaseTag&&r.digest===inference.releaseDigest);
+}});
+const server=createGateServer({gate,modelOrigin:MODEL_ORIGIN,forward:forwardOnce(MODEL_ORIGIN),metadata:async path=>boundedJson(await fetch(MODEL_ORIGIN+path,{redirect:'error',signal:AbortSignal.timeout(10000)}))});
+server.listen(3420,'127.0.0.1',()=>{
+  writeFileSync(new URL('./gate-process.json',import.meta.url),JSON.stringify({pid:process.pid,origin:'http://127.0.0.1:3420',mode:'laptop verification guard; see status for current proof scope'})+'\n',{mode:0o600});
+  gate.refresh().catch(()=>{});
+});
+for(const signal of ['SIGTERM','SIGINT'])process.once(signal,()=>{server.closeAllConnections();server.close(()=>process.exit(0));});

@@ -1,3 +1,4 @@
+import { clientAttestation, normalizeAttestationOrigin } from "@t3tools/client-runtime/attestation";
 import {
   AuthOrchestrationOperateScope,
   PROVIDER_SEND_TURN_SUPPORTED_IMAGE_MIME_TYPES,
@@ -260,6 +261,10 @@ async function runUpload(job: UploadJob): Promise<void> {
     return;
   }
   const result = await runAttachmentUploadCycle({
+    authorizeTransfer: async (url) => {
+      await clientAttestation.authorize(normalizeAttestationOrigin(url));
+      if (job.cancelled) throw new Error("Upload cancelled");
+    },
     registry: appAtomRegistry,
     createUploadUrl: attachmentEnvironment.createUploadUrl,
     remove: attachmentEnvironment.remove,

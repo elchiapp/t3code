@@ -1,0 +1,110 @@
+#!/usr/bin/env python3
+"""Install only the separately authorized T3 environment on Turing."""
+from pathlib import Path
+import hashlib
+import json
+import os
+import pwd
+import shutil
+import subprocess
+import sys
+import tarfile
+
+BASE = Path('{{VM_T3_ROOT}}')
+ARCHIVE = BASE / 'incoming/t3-v0.1.3-linux-source-build.tar.gz'
+RELEASE = BASE / 'releases/v0.1.3'
+
+
+def run(args, **kwargs):
+    return subprocess.run(args, check=True, capture_output=True, text=True, **kwargs)
+
+
+def digest(path):
+    h = hashlib.sha256()
+    with path.open('rb') as handle:
+        while block := handle.read(1024 * 1024):
+            h.update(block)
+    return h.hexdigest()
+
+
+assert os.geteuid() == 0, 'Run as root through the existing SSH channel'
+assert Path('/srv/turing').is_mount(), 'Encrypted data mount is unavailable'
+assert len(sys.argv) == 2 and digest(ARCHIVE) == sys.argv[1], 'Archive hash mismatch'
+assert not RELEASE.exists(), 'Release already exists; do not overwrite it'
+assert not (BASE / 'current').exists(), 'Existing installation requires a separate upgrade'
+assert not any(Path('/etc/systemd/system', name).exists() for name in
+               ['turing-t3-multi.service', 'turing-t3-gateway.service']), 'Service name collision'
+account = pwd.getpwnam('turing')
+
+before = json.loads(run(['tailscale', 'serve', 'status', '--json']).stdout)
+assert '8446' not in before.get('TCP', {}), 'HTTPS8446 is already configured'
+BASE.mkdir(parents=True, exist_ok=True)
+os.chmod(BASE, 0o750)
+os.chown(BASE, 0, account.pw_gid)
+RELEASE.mkdir(parents=True, mode=0o755)
+with tarfile.open(ARCHIVE) as archive:
+    archive.extractall(RELEASE, filter='data')
+manifest = json.loads((RELEASE / 'artifact-manifest.json').read_text())
+for entry in manifest['files']:
+    path = RELEASE / entry['path']
+    assert path.resolve().is_relative_to(RELEASE), 'Artifact path escaped its release'
+    assert path.is_file() and digest(path) == entry['sha256'], 'Artifact verification failed'
+
+for name in ['runtime', 'cache', 'data', 'state/userdata', 'providers/codex-chatgpt',
+             'providers/codex-tinfoil', 'providers/claude', 'workspaces/hello']:
+    path = BASE / name
+    path.mkdir(parents=True, exist_ok=True, mode=0o700)
+    os.chown(path, account.pw_uid, account.pw_gid)
+    os.chmod(path, 0o700)
+for name in ['state', 'providers', 'workspaces']:
+    os.chown(BASE / name, account.pw_uid, account.pw_gid)
+    os.chmod(BASE / name, 0o700)
+
+for source, destination in [('settings.json', 'state/userdata/settings.json'),
+                            ('codex-chatgpt.toml', 'providers/codex-chatgpt/config.toml'),
+                            ('codex-tinfoil.toml', 'providers/codex-tinfoil/config.toml')]:
+    target = BASE / destination
+    assert not target.exists(), 'Refuse to overwrite existing provider state'
+    shutil.copyfile(RELEASE / source, target)
+    os.chown(target, account.pw_uid, account.pw_gid)
+    os.chmod(target, 0o600)
+
+codex_path = RELEASE / 'bin/codex'
+run(['docker', 'cp', '-L', 'turing-codex-codex-1:/usr/local/bin/codex', str(codex_path)])
+codex_path.chmod(0o755)
+os.chown(codex_path, 0, 0)
+expected_codex = run(['docker', 'exec', 'turing-codex-codex-1', 'sha256sum', '/usr/local/bin/codex']).stdout.split()[0]
+assert digest(codex_path) == expected_codex, 'Codex copy mismatch'
+(BASE / 'current').symlink_to(Path('releases/v0.1.3'))
+
+versions = {
+    'node': run(['runuser', '-u', 'turing', '--', str(RELEASE / 'bin/node'), '--version']).stdout.strip(),
+    'codex': run(['runuser', '-u', 'turing', '--', str(codex_path), '--version']).stdout.strip(),
+    't3': run(['runuser', '-u', 'turing', '--', str(RELEASE / 'bin/t3'), '--version'], env={**os.environ, 'T3CODE_TELEMETRY_ENABLED': 'false'}).stdout.strip(),
+    'claude': run(['runuser', '-u', 'turing', '--', str(RELEASE / 'bin/claude'), '--version'], env={**os.environ, 'CLAUDE_CONFIG_DIR': str(BASE / 'providers/claude'), 'DISABLE_AUTOUPDATER': '1', 'CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC': '1'}).stdout.strip(),
+}
+assert versions['node'] == 'v26.12.1' and versions['t3'] == 't3 v0.1.3'
+for name in ['turing-t3-gateway.service', 'turing-t3-multi.service']:
+    shutil.copyfile(RELEASE / name, Path('/etc/systemd/system', name))
+    os.chmod(Path('/etc/systemd/system', name), 0o644)
+run(['systemd-analyze', 'verify', '/etc/systemd/system/turing-t3-gateway.service', '/etc/systemd/system/turing-t3-multi.service'])
+
+(BASE / 'runtime/serve-before.json').write_text(json.dumps(before, indent=2) + '\n')
+run(['systemctl', 'daemon-reload'])
+run(['systemctl', 'enable', '--now', 'turing-t3-gateway.service', 'turing-t3-multi.service'])
+run(['tailscale', 'serve', '--bg', '--https=8446', 'http://127.0.0.1:3218'])
+after = json.loads(run(['tailscale', 'serve', 'status', '--json']).stdout)
+for section, value in before.items():
+    if isinstance(value, dict):
+        for key, prior in value.items():
+            assert after.get(section, {}).get(key) == prior, 'An existing route changed'
+    else:
+        assert after.get(section) == value, 'An existing setting changed'
+
+receipt = {'version': '0.1.3', 'revision': manifest['revision'], 'archive_sha256': sys.argv[1],
+           'codex_sha256': expected_codex, 'versions': versions,
+           'url': '{{VM_T3_ORIGIN}}',
+           'existing_routes_preserved': True, 'account_logins': 'pending owner',
+           'inference_test': 'not yet run', 'attestation_scope': 'Existing VM-side Tinfoil verification; no new client-side VM attestation'}
+(BASE / 'runtime/install-receipt.json').write_text(json.dumps(receipt, indent=2) + '\n')
+print(json.dumps(receipt, indent=2))

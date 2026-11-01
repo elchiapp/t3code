@@ -1,0 +1,76 @@
+"""Read public SNP evidence through the Linux SEV guest UAPI. No keys are read."""
+import base64,ctypes,fcntl,json,mmap,os,platform,ssl,struct,sys,uuid
+
+class ReportRequest(ctypes.Structure):
+    _fields_=[('binding',ctypes.c_ubyte*64),('level',ctypes.c_uint32),('reserved',ctypes.c_ubyte*28)]
+class ExtendedRequest(ctypes.Structure):
+    _fields_=[('report',ReportRequest),('cert_address',ctypes.c_uint64),('cert_length',ctypes.c_uint32)]
+class GuestCommand(ctypes.Structure):
+    _fields_=[('version',ctypes.c_ubyte),('request',ctypes.c_uint64),('response',ctypes.c_uint64),('error',ctypes.c_uint64)]
+
+CERT_LIMIT=16384
+REPORT_LENGTH=1184
+CERT_NAMES={'63da758d-e664-4564-adc5-f4b93be8accd':'vcekPem','4ab7b379-bbac-4fe4-a02f-05aef327c782':'askPem','c0b406a4-a803-4952-9743-3fb6014cd0ae':'arkPem'}
+
+def decode_cert_table(data):
+    if len(data)>CERT_LIMIT:raise ValueError('Certificate table is too large')
+    entries=[];cursor=0
+    for _ in range(64):
+        if cursor+24>len(data):raise ValueError('Certificate table is truncated')
+        guid=data[cursor:cursor+16];offset,length=struct.unpack_from('<II',data,cursor+16);cursor+=24
+        if guid==bytes(16) and offset==0 and length==0:break
+        if not length or length>8192 or offset+length>len(data):raise ValueError('Invalid certificate range')
+        entries.append((str(uuid.UUID(bytes=guid)),offset,length))
+    else:raise ValueError('Certificate table has too many entries')
+    result={};ranges=[]
+    for guid,offset,length in entries:
+        if offset<cursor or any(offset<end and start<offset+length for start,end in ranges):raise ValueError('Certificate ranges overlap')
+        ranges.append((offset,offset+length))
+        if guid in result:raise ValueError('Duplicate certificate identity')
+        result[guid]=data[offset:offset+length]
+    return result
+
+def decode_report(data,binding):
+    if len(data)!=4000 or len(binding)!=64:raise ValueError('Invalid report buffer')
+    status,size=struct.unpack_from('<II',data)
+    if status!=0 or size!=REPORT_LENGTH:raise ValueError('Firmware did not return a complete SNP report')
+    report=data[32:32+size]
+    if report[0x50:0x90]!=binding:raise ValueError('Hardware report did not echo the requested binding')
+    return report
+
+def collect(binding):
+    if platform.system()!='Linux' or ctypes.sizeof(ctypes.c_void_p)!=8 or sys.byteorder!='little':raise RuntimeError('Unsupported SEV guest ABI host')
+    if len(binding)!=64:raise ValueError('SNP report binding must be 64 bytes')
+    if (ctypes.sizeof(ReportRequest),ctypes.sizeof(ExtendedRequest),ctypes.sizeof(GuestCommand))!=(96,112,32):raise RuntimeError('SEV UAPI structure layout mismatch')
+    with mmap.mmap(-1,CERT_LIMIT,flags=mmap.MAP_PRIVATE|mmap.MAP_ANONYMOUS) as pages:
+        view=(ctypes.c_ubyte*CERT_LIMIT).from_buffer(pages)
+        request=ExtendedRequest();request.report.binding[:]=binding;request.report.level=0
+        request.cert_address=ctypes.addressof(view);request.cert_length=CERT_LIMIT
+        response=ctypes.create_string_buffer(4000)
+        command=GuestCommand(1,ctypes.addressof(request),ctypes.addressof(response),0)
+        packed=bytearray(bytes(command))
+        fd=os.open('/dev/sev-guest',os.O_RDWR|os.O_CLOEXEC)
+        try:
+            try:fcntl.ioctl(fd,0xc0205302,packed,True)
+            except OSError as error:
+                result=GuestCommand.from_buffer_copy(packed)
+                raise RuntimeError(f'SNP extended report failed: errno={error.errno}, firmware={result.error&0xffffffff}, vmm={result.error>>32}') from None
+            report=decode_report(response.raw,binding)
+            length=request.cert_length
+            if length>CERT_LIMIT:raise ValueError('Firmware certificate table exceeds the allocated buffer')
+            table=decode_cert_table(pages[:length])
+        finally:
+            os.close(fd);del view
+    certs={name:ssl.DER_cert_to_PEM_cert(table[guid]) for guid,name in CERT_NAMES.items() if guid in table}
+    if 'vcekPem' not in certs:raise RuntimeError('The host did not supply a VCEK certificate')
+    return {'format':'amd-sev-snp-v1','productLine':'Milan','reportBase64':base64.b64encode(report).decode(),'certs':certs}
+
+if __name__=='__main__':
+    raw=sys.stdin.buffer.read(1025)
+    if len(raw)>1024:raise ValueError('Collector input exceeds the limit')
+    text=raw.decode().strip()
+    if len(text)!=128 or any(c not in '0123456789abcdef' for c in text):raise ValueError('Expected one 64-byte hexadecimal binding')
+    result=collect(bytes.fromhex(text))
+    if '--probe' in sys.argv:
+        print(json.dumps({'report_bytes':len(base64.b64decode(result['reportBase64'])),'certificates':list(result['certs']),'binding_echoed':True}))
+    else:print(json.dumps(result))

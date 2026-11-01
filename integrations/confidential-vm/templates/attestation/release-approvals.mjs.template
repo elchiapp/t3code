@@ -1,0 +1,52 @@
+import {lstatSync,readFileSync,writeFileSync,renameSync,unlinkSync} from 'node:fs';
+import {randomBytes} from 'node:crypto';
+import {pathToFileURL} from 'node:url';
+
+export const APPROVAL_PATH=new URL('./owner-release-approvals.json',import.meta.url);
+const ENDPOINT='https://inference.tinfoil.sh';
+function identity({tag,digest}={}){
+  if(!/^v\d+\.\d+\.\d+$/.test(tag??'')||!/^[a-f0-9]{64}$/.test(digest??''))throw Error('Invalid release identity');
+  return {endpoint:ENDPOINT,tag,digest};
+}
+export function readApprovals(path=APPROVAL_PATH){
+  let stat;try{stat=lstatSync(path);}catch(error){if(error.code==='ENOENT')return [];throw error;}
+  if(!stat.isFile()||stat.uid!==process.getuid()||(stat.mode&0o077)||stat.size>32768)throw Error('The local release approval file is not protected');
+  const data=JSON.parse(readFileSync(path,'utf8'));
+  if(data.version!==1||!Array.isArray(data.releases)||data.releases.length>32)throw Error('Invalid local release approvals');
+  return data.releases.map(item=>{
+    const release=identity(item);
+    if(item.endpoint!==ENDPOINT||typeof item.approvedAt!=='string'||!Number.isFinite(Date.parse(item.approvedAt)))throw Error('Invalid local release approval');
+    return {...release,approvedAt:item.approvedAt};
+  });
+}
+function save(path,releases){
+  readApprovals(path);
+  const temporary=new URL('./.release-approval-'+randomBytes(16).toString('hex')+'.tmp',path instanceof URL?path:pathToFileURL(path));
+  try{
+    writeFileSync(temporary,JSON.stringify({version:1,releases},null,2)+'\n',{mode:0o600,flag:'wx'});
+    renameSync(temporary,path);
+  }finally{try{unlinkSync(temporary);}catch(error){if(error.code!=='ENOENT')throw error;}}
+}
+export function createApprovalManager({verify,path=APPROVAL_PATH,now=()=>new Date().toISOString()}){
+  let pending=Promise.resolve();
+  return {
+    change(action,selected){
+      const result=pending.then(async()=>{
+        const release=identity(selected);
+        if(!['approve','revoke'].includes(action))throw Error('Unsupported release decision');
+        const existing=readApprovals(path);
+        const remaining=existing.filter(r=>r.tag!==release.tag||r.digest!==release.digest);
+        if(action==='approve'){
+          const current=await verify();
+          if(!['verified','approval_required'].includes(current.state)||current.releaseTag!==release.tag||current.releaseDigest!==release.digest)throw Error('Fresh cryptographic evidence does not match this release decision');
+          if(remaining.length>=32)throw Error('Too many saved release approvals');
+          remaining.push({...release,approvedAt:now()});
+        }
+        save(path,remaining);
+        return {action,tag:release.tag,digest:release.digest};
+      });
+      pending=result.catch(()=>{});
+      return result;
+    }
+  };
+}

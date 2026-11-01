@@ -43,7 +43,9 @@ import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
+import * as Predicate from "effect/Predicate";
 import * as Ref from "effect/Ref";
+import * as Schedule from "effect/Schedule";
 import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
 
@@ -662,6 +664,15 @@ const make = Effect.gen(function* () {
   ) =>
     ensureProjectionTranscript(threadId).pipe(
       Effect.andThen(orchestrator.getThreadSnapshotWindow(threadId, options)),
+      // Mobile can request its local thread ID before the create command commits.
+      Effect.retry({
+        while: (error) =>
+          Predicate.hasProperty(error, "cause") &&
+          Predicate.hasProperty(error.cause, "_tag") &&
+          error.cause._tag === "ProjectionStoreThreadNotFoundError",
+        times: 50,
+        schedule: Schedule.spaced("100 millis"),
+      }),
     );
 
   const assertDispatchTargetEnabled = (command: OrchestrationV2ServerCommand) => {

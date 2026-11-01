@@ -1,0 +1,75 @@
+import {test} from 'node:test';
+import assert from 'node:assert/strict';
+import {once} from 'node:events';
+import https from 'node:https';
+import http from 'node:http';
+import {generateKeyPairSync} from 'node:crypto';
+import {execFileSync} from 'node:child_process';
+import {AttestationGate} from './gate-state.mjs';
+import {createGateServer,pinnedAgent,spkiHash,renderStatus} from './gate-server.mjs';
+import {X509Certificate} from 'node:crypto';
+
+const valid=()=>({checks:{hardware:{state:'verified'},inference:{state:'verified'},tls_key_commitment:{state:'verified'}},tlsSpkiSha256:'1'.repeat(64)});
+async function server(t,collect,options={}){
+  let posts=0;const gate=new AttestationGate({collect,...options});
+  const s=createGateServer({gate,metadata:async()=>({data:[]}),forward:async({res,body,isCurrent})=>{assert.equal(isCurrent(),true);posts++;res.writeHead(200,{'content-type':'application/json'});res.end(JSON.stringify({received:body.toString()}));},...options});
+  s.listen(0,'127.0.0.1');await once(s,'listening');t.after(()=>{s.closeAllConnections();s.close();});
+  return {gate,posts:()=>posts,request:(path='/v1/responses',init={})=>new Promise((resolve,reject)=>{const q=http.request(`http://127.0.0.1:${s.address().port}${path}`,{method:'POST',headers:{'content-type':'application/json',...init.headers}},r=>{r.resume();r.on('end',()=>resolve({status:r.statusCode}));});q.on('error',reject);q.end('{"input":"synthetic canary"}');})};
+}
+test('missing hardware blocks before any canary reaches inference',async t=>{
+  const x=await server(t,async()=>({checks:{inference:{state:'verified'}}}));assert.equal((await x.request()).status,503);assert.equal(x.posts(),0);
+});
+test('an SDK/server verified boolean is insufficient',async t=>{
+  const x=await server(t,async()=>({securityVerified:true,verified:true}));assert.equal((await x.request()).status,503);assert.equal(x.posts(),0);
+});
+test('a not-approved inference release never forwards',async t=>{
+  const x=await server(t,async()=>({...valid(),checks:{...valid().checks,inference:{state:'approval_required'}}}));assert.equal((await x.request()).status,503);assert.equal(x.posts(),0);
+});
+test('absent endpoint commitment blocks the request',async t=>{
+  const proof=valid();delete proof.checks.tls_key_commitment;const x=await server(t,async()=>proof);assert.equal((await x.request()).status,503);assert.equal(x.posts(),0);
+});
+test('full policy rejects otherwise valid partial evidence',async t=>{
+  const x=await server(t,async()=>valid(),{scope:'complete'});assert.equal((await x.request()).status,503);assert.equal(x.posts(),0);
+});
+test('partial success never claims complete workload attestation',async t=>{
+  const x=await server(t,async()=>valid());assert.equal((await x.request()).status,200);assert.equal(x.posts(),1);assert.equal(x.gate.status().allProofsComplete,false);
+});
+test('verification that expires while checking cannot authorize a request',async t=>{
+  let clock=0;const x=await server(t,async()=>{clock=60001;return valid();},{now:()=>clock,monotonic:()=>clock});assert.equal((await x.request()).status,503);assert.equal(x.posts(),0);
+});
+test('clock rollback cannot extend the monotonic validity period',async()=>{
+  let wall=100000,mono=0;const g=new AttestationGate({collect:async()=>valid(),now:()=>wall,monotonic:()=>mono});const p=await g.authorize();assert.equal(g.valid(p),true);wall=1;mono=60001;assert.equal(g.valid(p),false);
+});
+test('concurrent requests share one cryptographic refresh',async t=>{
+  let collections=0;const x=await server(t,async()=>{collections++;await Promise.resolve();return valid();});const replies=await Promise.all([x.request(),x.request()]);assert.deepEqual(replies.map(r=>r.status),[200,200]);assert.equal(collections,1);assert.equal(x.posts(),2);
+});
+test('a synchronous collector error can be retried without a stuck promise',async()=>{
+  let calls=0;const g=new AttestationGate({collect:()=>{if(++calls===1)throw Error('synthetic failure');return valid();}});await assert.rejects(g.authorize());assert.ok(await g.authorize());assert.equal(calls,2);
+});
+test('withdrawn trust invalidates a cached receipt before forwarding',async t=>{
+  let approved=true;
+  const x=await server(t,async()=>approved?valid():({...valid(),checks:{...valid().checks,inference:{state:'approval_required'}}}),{policyCurrent:()=>approved});
+  assert.equal((await x.request()).status,200);approved=false;
+  assert.equal((await x.request()).status,503);assert.equal(x.posts(),1);
+});
+test('cross-origin and wrong-host requests cannot trigger forwarding',async t=>{
+  const x=await server(t,async()=>valid());assert.equal((await x.request('/v1/responses',{headers:{origin:'https://untrusted.invalid','content-type':'application/json'}})).status,403);assert.equal((await x.request('/v1/responses',{headers:{host:'untrusted.invalid','content-type':'application/json'}})).status,403);assert.equal(x.posts(),0);
+});
+test('unsupported paths and non-JSON model requests are refused',async t=>{
+  const x=await server(t,async()=>valid());assert.equal((await x.request('/api/anything')).status,404);assert.equal((await x.request('/v1/responses',{headers:{'content-type':'text/plain'}})).status,415);assert.equal(x.posts(),0);
+});
+test('request limits apply before invoking the verifier',async t=>{
+  let calls=0;const x=await server(t,async()=>{calls++;return valid();},{maxBytes:2});assert.equal((await x.request()).status,413);assert.equal(calls,0);assert.equal(x.posts(),0);
+});
+test('status output escapes public evidence error text',()=>{
+  const html=renderStatus({error:'<script>bad()</script>',checks:{hardware:{state:'<img src=x>'}}});assert.ok(!html.includes('<script>'));assert.ok(html.includes('&lt;script&gt;'));
+});
+test('a different TLS public key is rejected before the HTTP request',async t=>{
+  const {privateKey}=generateKeyPairSync('ec',{namedCurve:'prime256v1'});const key=privateKey.export({type:'pkcs8',format:'pem'});
+  const cert=execFileSync('openssl',['req','-new','-x509','-key','/dev/stdin','-days','1','-subj','/CN=localhost','-addext','subjectAltName=IP:127.0.0.1,DNS:localhost'],{input:key,stdio:['pipe','pipe','pipe']});
+  let received=0;const s=https.createServer({key,cert},(_,res)=>{received++;res.end('ok');});s.listen(0,'127.0.0.1');await once(s,'listening');t.after(()=>{s.closeAllConnections();s.close();});
+  const url=`https://127.0.0.1:${s.address().port}/`;const raw=new X509Certificate(cert).raw;
+  const request=agent=>new Promise((resolve,reject)=>{const q=https.get(url,{agent},r=>{r.resume();r.on('end',()=>resolve(r.statusCode));});q.on('error',reject);});
+  const correct=pinnedAgent(spkiHash(raw),{ca:cert});t.after(()=>correct.destroy());assert.equal(await request(correct),200);
+  const wrong=pinnedAgent('0'.repeat(64),{ca:cert});t.after(()=>wrong.destroy());await assert.rejects(request(wrong),/TLS key differs/);assert.equal(received,1);
+});

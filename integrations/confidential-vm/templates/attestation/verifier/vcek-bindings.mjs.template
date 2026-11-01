@@ -1,0 +1,13 @@
+// Use the existing source-pinned Tinfoil certificate parser/extension checks.
+// The owned verifier has already checked the AMD root and certificate signatures.
+export function createVcekBindingVerifier({CertificateChain,X509Certificate}) {
+  return (snp,report)=>{
+    if(!['Milan','Genoa'].includes(snp.productLine))throw Error('Unsupported VCEK binding layout');
+    const decode=pem=>Uint8Array.from(atob(pem.replace(/-----[^-]+-----/g,'').replace(/\s/g,'')),c=>c.charCodeAt(0));
+    const certs=snp.certs;
+    const chain=new CertificateChain(...['arkPem','askPem','vcekPem'].map(k=>X509Certificate.parse(decode(certs[k]))));
+    const view=new DataView(report.buffer,report.byteOffset,report.byteLength),tcb=view.getBigUint64(0x180,true);
+    chain.validateVcekTcb({blSpl:Number(tcb&255n),teeSpl:Number((tcb>>8n)&255n),snpSpl:Number((tcb>>48n)&255n),ucodeSpl:Number((tcb>>56n)&255n)});
+    chain.validateVcekHwid(report.subarray(0x1a0,0x1e0));
+  };
+}

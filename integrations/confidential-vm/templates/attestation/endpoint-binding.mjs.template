@@ -1,0 +1,19 @@
+import https from 'node:https';
+import {createHash} from 'node:crypto';
+import {spkiHash} from './gate-server.mjs';
+
+export const MODEL_ORIGIN='{{MODEL_ORIGIN}}';
+export const PROOF_ORIGIN='{{PROOF_ORIGIN}}';
+export function commitment(nonce,spki,origin=MODEL_ORIGIN){
+  if(!/^[A-Za-z0-9_-]{43}$/.test(nonce)||!/^[a-f0-9]{64}$/.test(spki)||origin!==MODEL_ORIGIN)throw Error('Invalid endpoint binding inputs');
+  return createHash('sha256').update(JSON.stringify(['t3-proxy-attestation-v1',origin,nonce,spki])).digest('base64url');
+}
+export async function peerKey(origin=MODEL_ORIGIN){
+  if(origin!==MODEL_ORIGIN)throw Error('Unapproved proxy origin');
+  return new Promise((resolve,reject)=>{
+    const req=https.get(origin+'/healthz',{agent:false},res=>{
+      try{const cert=res.socket.getPeerCertificate();if(!cert.raw)throw Error('TLS certificate is unavailable');const digest=spkiHash(cert.raw);res.destroy();resolve(digest);}catch(error){res.destroy();reject(error);}
+    });
+    req.setTimeout(10000,()=>req.destroy(Error('Proxy TLS probe timed out')));req.on('error',reject);
+  });
+}

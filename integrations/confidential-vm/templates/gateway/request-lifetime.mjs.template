@@ -1,0 +1,18 @@
+// Transport bounds, not model progress or fabricated SSE output. A progressing
+// response can run longer than the former two-minute whole-request limit.
+export const INFERENCE_TIMEOUTS=Object.freeze({requestMs:120000,idleMs:300000,totalMs:900000});
+export function requestLifetime(controller,limits=INFERENCE_TIMEOUTS,clock={set:setTimeout,clear:clearTimeout}){
+  for(const key of ['requestMs','idleMs','totalMs'])if(!Number.isSafeInteger(limits[key])||limits[key]<=0)throw Error('Invalid inference timeout');
+  if(limits.totalMs<limits.idleMs)throw Error('Inference total timeout must cover idle timeout');
+  let total,idle,active=false,closed=false;
+  const clear=()=>{clock.clear(total);clock.clear(idle);};
+  const close=()=>{if(closed)return;closed=true;clear();controller.signal.removeEventListener('abort',close);};
+  const expire=kind=>controller.abort(new Error('Inference '+kind+' timeout'));
+  controller.signal.addEventListener('abort',close,{once:true});
+  total=clock.set(()=>expire('request'),limits.requestMs);
+  const progress=()=>{if(!active||closed)return;clock.clear(idle);idle=clock.set(()=>expire('idle'),limits.idleMs);};
+  return {
+    startInference(){if(active||closed)return;active=true;clock.clear(total);total=clock.set(()=>expire('total'),limits.totalMs);progress();},
+    progress,close,
+  };
+}

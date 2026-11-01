@@ -1,0 +1,10 @@
+from pathlib import Path
+import os
+root=Path(__file__).resolve().parent
+node='{{NODE_PATH}}'
+server='{{T3_SOURCE_ROOT}}/apps/server/dist/bin.mjs'
+keys=['PATH','HOME','USER','LOGNAME','SHELL','TMPDIR','LANG','LC_ALL','SSL_CERT_FILE']
+env={k:os.environ[k] for k in keys if k in os.environ}
+env.update(T3CODE_TELEMETRY_ENABLED='false',DO_NOT_TRACK='1',T3CODE_DISABLE_AUTO_UPDATE='true')
+os.chdir(root/'projects/local-browser')
+os.execve(node,[node,server,'serve','--base-dir',str(root/'server'),'--host','127.0.0.1','--port','3219','--no-browser',str(root/'projects/local-browser')],env)

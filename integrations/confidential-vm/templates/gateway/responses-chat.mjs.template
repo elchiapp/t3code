@@ -1,0 +1,91 @@
+import {randomUUID} from 'node:crypto';
+export function toChatRequest(p) {
+  const messages=[];
+  if(p.instructions)messages.push({role:'system',content:p.instructions});
+  const input=typeof p.input==='string'?[{role:'user',content:p.input}]:p.input??[];
+  const flat=[];const names=new Map();
+  const flatten=(tools,namespace)=>{for(const t of tools){if(t.type==='namespace'){flatten(t.tools??[],t.name);continue;}const alias=namespace?`${namespace}__${t.name}`:t.name;flat.push({...t,name:alias});names.set(alias,{name:t.name,...(namespace?{namespace}:{})});}};
+  flatten(p.tools??[]);
+  const custom=new Set(flat.filter(t=>t.type==='custom').map(t=>t.name));
+  for(const item of input){
+    if(item.type==='reasoning')continue;
+    if(['function_call','custom_tool_call'].includes(item.type)){
+      messages.push({role:'assistant',content:null,tool_calls:[{id:item.call_id,type:'function',function:{name:item.namespace?`${item.namespace}__${item.name}`:item.name,
+        arguments:item.type==='custom_tool_call'?JSON.stringify({input:item.input}):item.arguments}}]});continue;
+    }
+    if(['function_call_output','custom_tool_call_output'].includes(item.type)){
+      messages.push({role:'tool',tool_call_id:item.call_id,content:typeof item.output==='string'?item.output:JSON.stringify(item.output)});continue;
+    }
+    if(item.role){
+      const content=typeof item.content==='string'?item.content:(item.content??[]).map(c=>{
+        if(['input_text','output_text','text'].includes(c.type))return {type:'text',text:c.text};
+        if(c.type==='input_image')return {type:'image_url',image_url:{url:c.image_url,detail:c.detail??'auto'}};
+        throw new Error('Unsupported input item for Chat-only model');
+      });
+      messages.push({role:item.role==='developer'?'system':item.role,content});
+    }
+  }
+  const tools=flat.map(t=>{
+    if(t.type==='function')return {type:'function',function:{name:t.name,description:t.description,parameters:t.parameters}};
+    if(t.type==='custom')return {type:'function',function:{name:t.name,description:t.description,parameters:{type:'object',properties:{input:{type:'string'}},required:['input'],additionalProperties:false}}};
+    throw new Error(`Unsupported tool type for Chat-only model: ${t.type}`);
+  });
+  return {request:{model:p.model,messages,stream:p.stream===true,...(p.stream===true?{stream_options:{include_usage:true}}:{}),...(p.max_output_tokens==null?{}:{max_tokens:p.max_output_tokens}),
+    ...(p.reasoning_effort||p.reasoning?.effort?{reasoning_effort:p.reasoning_effort??p.reasoning.effort}:{}),
+    ...(p.chat_template_kwargs?{chat_template_kwargs:p.chat_template_kwargs}:{}),
+    ...(tools.length?{tools,tool_choice:'auto'}:{})},custom,names,schemas:new Map(flat.map(t=>[t.name,t.parameters]))};
+}
+export function normalizeTypedArguments(value,schema) {
+  if(schema?.type==='boolean'&&['true','false'].includes(value))return value==='true';
+  if(['integer','number','object','array'].includes(schema?.type)&&typeof value==='string'){
+    try{
+      const parsed=JSON.parse(value);
+      if(schema.type==='integer'&&Number.isSafeInteger(parsed))return parsed;
+      if(schema.type==='number'&&typeof parsed==='number'&&Number.isFinite(parsed))return parsed;
+      if(schema.type==='array'&&Array.isArray(parsed))value=parsed;
+      if(schema.type==='object'&&parsed&&typeof parsed==='object'&&!Array.isArray(parsed))value=parsed;
+    }catch{/* Preserve invalid values for the engine's schema rejection. */}
+  }
+  if(schema?.type==='object'&&value&&typeof value==='object'&&!Array.isArray(value))return Object.fromEntries(Object.entries(value).map(([k,v])=>[k,normalizeTypedArguments(v,schema.properties?.[k])]));
+  if(schema?.type==='array'&&Array.isArray(value))return value.map(v=>normalizeTypedArguments(v,schema.items));
+  return value;
+}
+export function fromChatResponse(chat,custom=new Set(),names=new Map(),schemas=new Map()) {
+  const message=chat.choices?.[0]?.message;if(!message)throw new Error('Invalid chat response');
+  const finish=chat.choices[0].finish_reason;
+  const incomplete=finish==='length'||finish==='content_filter';
+  if(finish && !['stop','tool_calls','function_call','length','content_filter'].includes(finish))throw new Error('Unknown Chat completion reason');
+  const status=incomplete?'incomplete':'completed';
+  const output=[];
+  const reasoning=message.reasoning_content??message.reasoning??message.reasoning_text;
+  if(typeof reasoning==='string'&&reasoning)output.push({id:'rs_'+randomUUID(),type:'reasoning',summary:[],content:[{type:'reasoning_text',text:reasoning}],status:'completed'});
+  if(message.content)output.push({id:'msg_'+randomUUID(),type:'message',role:'assistant',status,content:[{type:'output_text',text:message.content,annotations:[]}]});
+  for(const call of (incomplete?[]:message.tool_calls??[])){
+    const identity=names.get(call.function.name)??{name:call.function.name};
+    if(custom.has(call.function.name))output.push({id:'ct_'+randomUUID(),type:'custom_tool_call',call_id:call.id,...identity,input:JSON.parse(call.function.arguments).input,status:'completed'});
+    else output.push({id:'fc_'+randomUUID(),type:'function_call',call_id:call.id,...identity,arguments:JSON.stringify(normalizeTypedArguments(JSON.parse(call.function.arguments),schemas.get(call.function.name))),status:'completed'});
+  }
+  return {id:'resp_'+randomUUID(),object:'response',created_at:Math.floor(Date.now()/1000),status,model:chat.model,output,...(incomplete?{incomplete_details:{reason:finish==='length'?'max_output_tokens':'content_filter'}}:{}),
+    usage:chat.usage?{input_tokens:chat.usage?.prompt_tokens??0,output_tokens:chat.usage?.completion_tokens??0,total_tokens:chat.usage?.total_tokens??0,output_tokens_details:{reasoning_tokens:chat.usage?.completion_tokens_details?.reasoning_tokens??0},input_tokens_details:{cached_tokens:chat.usage?.prompt_tokens_details?.cached_tokens??0}}:null};
+}
+export function responseEvents(response) {
+  const events=[];let seq=0;
+  const emit=(type,value)=>events.push(`event: ${type}\ndata: ${JSON.stringify({type,sequence_number:seq++,...value})}\n\n`);
+  emit('response.created',{response:{...response,status:'in_progress',output:[]}});
+  response.output.forEach((item,output_index)=>{
+    const empty=item.type==='message'?{...item,status:'in_progress',content:[]}:item.type==='custom_tool_call'?{...item,status:'in_progress',input:''}:{...item,status:'in_progress',arguments:''};
+    emit('response.output_item.added',{output_index,item:empty});
+    if(item.type==='message'){
+      const part=item.content[0];emit('response.content_part.added',{item_id:item.id,output_index,content_index:0,part:{...part,text:''}});
+      emit('response.output_text.delta',{item_id:item.id,output_index,content_index:0,delta:part.text});
+      emit('response.output_text.done',{item_id:item.id,output_index,content_index:0,text:part.text});
+      emit('response.content_part.done',{item_id:item.id,output_index,content_index:0,part});
+    }else{
+      const kind=item.type==='custom_tool_call'?'custom_tool_call_input':'function_call_arguments';const value=item.type==='custom_tool_call'?item.input:item.arguments;
+      emit(`response.${kind}.delta`,{item_id:item.id,output_index,delta:value});
+      emit(`response.${kind}.done`,{item_id:item.id,output_index,...(item.type==='custom_tool_call'?{input:value}:{arguments:value})});
+    }
+    emit('response.output_item.done',{output_index,item});
+  });
+  emit(response.status==='incomplete'?'response.incomplete':'response.completed',{response});return events.join('');
+}

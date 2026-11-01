@@ -1,0 +1,62 @@
+{
+  "version": 1,
+  "protocol": "turing-privacy-evidence-v1",
+  "policyId": "turing-privacy-2026-09-22",
+  "expectedOrigins": [
+    "{{VM_ORIGIN}}",
+    "{{EVIDENCE_ORIGIN}}",
+    "{{PRIVACY_ORIGIN}}"
+  ],
+  "evidenceOrigin": "{{EVIDENCE_ORIGIN}}",
+  "release": {
+    "releaseId": "hardware-and-inference-only",
+    "images": {
+      "unmeasured": "sha256:0000000000000000000000000000000000000000000000000000000000000000"
+    },
+    "configSha256": null
+  },
+  "workloads": null,
+  "freshness": {
+    "maxAgeMs": 120000,
+    "maxSkewMs": 30000,
+    "challengeTtlMs": 60000
+  },
+  "evidenceSigner": {
+    "keyId": "vm-evidence-ed25519-1",
+    "publicKeyJwk": null,
+    "custody": "unbound-vm-file"
+  },
+  "tinfoil": {
+    "enclaveOrigin": "https://inference.tinfoil.sh",
+    "configRepo": "tinfoilsh/confidential-model-router",
+    "requireHpke": true,
+    "approvedReleases": []
+  },
+  "hardware": {
+    "models": [
+      "GCP_AMD_SEV"
+    ],
+    "requireSecureBoot": true,
+    "requireDebugDisabled": true,
+    "snp": {
+      "productLine": "Milan",
+      "amdArkSha256Hex": "69d063b45344d26a2e94e1f4210de49ef555308287d4c174445c95639a540bcd",
+      "measurementHex": "21199b36f500cc26a5d26c92c699fe2820ce217458bf219be18efd761f636b4145fdecbd7249c4b566797b4afd339546",
+      "minTcbHex": "de1d000000000004"
+    }
+  },
+  "gcp": {
+    "projectId": "OWNER_CONFIRMED_PROJECT",
+    "workloadTokenAudience": "{{VM_ORIGIN}}/privacy-evidence"
+  },
+  "storage": {
+    "requireAttestationGatedKeyRelease": true
+  },
+  "verifierBuild": {
+    "standaloneSha256Hex": "392dd620bd88b12cd27eb1c09aebd69331f8845a670cde244ff21bce87dd7e3e"
+  },
+  "revocation": {
+    "revokedReleaseIds": [],
+    "minSchemaVersion": 1
+  }
+}

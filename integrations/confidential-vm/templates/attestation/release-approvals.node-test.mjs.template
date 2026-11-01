@@ -1,0 +1,49 @@
+import {test} from 'node:test';
+import assert from 'node:assert/strict';
+import {mkdtempSync,rmSync,statSync,writeFileSync,chmodSync,symlinkSync,existsSync} from 'node:fs';
+import {tmpdir} from 'node:os';
+import {join} from 'node:path';
+import {createApprovalManager,readApprovals} from './release-approvals.mjs';
+
+const selected={tag:'v0.0.168',digest:'a'.repeat(64)};
+const proof={state:'approval_required',releaseTag:selected.tag,releaseDigest:selected.digest};
+function fixture(t,verify=async()=>proof){
+  const dir=mkdtempSync(join(tmpdir(),'t3-release-decision-'));t.after(()=>rmSync(dir,{recursive:true,force:true}));
+  const path=join(dir,'owner-approvals.json');return {path,manager:createApprovalManager({path,verify})};
+}
+test('missing local approvals cannot approve a release',t=>{
+  const {path}=fixture(t);assert.deepEqual(readApprovals(path),[]);
+});
+test('matching fresh cryptographic evidence records only the exact release',async t=>{
+  const {path,manager}=fixture(t);await manager.change('approve',selected);
+  assert.equal(statSync(path).mode&0o777,0o600);const records=readApprovals(path);
+  assert.equal(records.length,1);assert.equal(records[0].digest,selected.digest);assert.equal(records[0].endpoint,'https://inference.tinfoil.sh');
+  assert.ok(!records.some(r=>r.digest==='b'.repeat(64)));
+});
+test('a changed current release is refused before creating a decision',async t=>{
+  const {path,manager}=fixture(t,async()=>({...proof,releaseDigest:'b'.repeat(64)}));
+  await assert.rejects(manager.change('approve',selected),/does not match/);assert.equal(existsSync(path),false);
+});
+test('a server verified flag does not authorize a release',async t=>{
+  const {path,manager}=fixture(t,async()=>({verified:true,...selected}));
+  await assert.rejects(manager.change('approve',selected),/cryptographic evidence/);assert.equal(existsSync(path),false);
+});
+test('revocation removes exactly the selected release without an inference call',async t=>{
+  let calls=0;const {path,manager}=fixture(t,async()=>{calls++;return proof;});
+  await manager.change('approve',selected);await manager.change('revoke',selected);
+  assert.deepEqual(readApprovals(path),[]);assert.equal(calls,1);
+});
+test('duplicate approval does not widen or duplicate trust',async t=>{
+  const {path,manager}=fixture(t);await Promise.all([manager.change('approve',selected),manager.change('approve',selected)]);
+  assert.equal(readApprovals(path).length,1);
+});
+test('unprotected or symlink approval files are rejected',async t=>{
+  const {path,manager}=fixture(t);writeFileSync(path,'{"version":1,"releases":[]}',{mode:0o644});
+  await assert.rejects(manager.change('approve',selected),/not protected/);
+  chmodSync(path,0o600);const link=path+'.link';symlinkSync(path,link);assert.throws(()=>readApprovals(link),/not protected/);
+});
+test('malformed identities and corrupt approval documents fail closed',async t=>{
+  const {path,manager}=fixture(t);await assert.rejects(manager.change('approve',{tag:'latest',digest:'a'.repeat(64)}),/Invalid release/);
+  writeFileSync(path,'{"version":1,"releases":[{"tag":"v0.0.168","digest":"bad"}]}',{mode:0o600});
+  assert.throws(()=>readApprovals(path),/Invalid release/);
+});

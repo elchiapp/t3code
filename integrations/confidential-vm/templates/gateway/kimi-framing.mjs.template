@@ -1,0 +1,80 @@
+import {Transform} from 'node:stream';
+import {StringDecoder} from 'node:string_decoder';
+
+const channels=['response','think','analysis'];
+function reasoningKind(kind){return typeof kind==='string'&&kind.includes('reasoning');}
+export function cleanKimiText(text,{reasoning=false,channel=null}={}) {
+  if(typeof text!=='string')return text;
+  const match=text.match(/^\s*<\|open\|>\s*(response|think|analysis)\s*/);
+  const selected=match?[match[1]]:channel?[channel]:reasoning?['think','analysis']:[];
+  if(!selected.length)return text;
+  const body=match?text.slice(match[0].length):text;
+  // Inline examples are data. Only an outer frame's closing suffix is removed.
+  if(body.includes('<|open|>'))return match?body.replace(new RegExp(`\\s*<\\|close\\|>(?:\\s*${match[1]})?\\s*$`),''):body;
+  const at=body.indexOf('<|close|>');if(at<0)return body;
+  const before=body.slice(0,at).trimEnd(),after=body.slice(at+9).trim();
+  if(!after||selected.some(c=>c.startsWith(after)))return before;
+  // Observed live: the final event appends the already streamed thought after
+  // the closing channel marker. Suppress only an exact/prefix replay of it.
+  const candidates=[after,...selected.filter(c=>after.startsWith(c)).map(c=>after.slice(c.length).trim())];
+  if(candidates.some(replay=>before.trimStart().startsWith(replay)))return before;
+  throw new Error('Unexpected Kimi text after closing frame');
+}
+export function cleanKimiResponse(value,reasoning=false) {
+  if(Array.isArray(value))return value.map(v=>typeof v==='string'&&reasoning?cleanKimiText(v,{reasoning}):cleanKimiResponse(v,reasoning));
+  if(value&&typeof value==='object'){
+    reasoning=reasoning||reasoningKind(value.type);
+    return Object.fromEntries(Object.entries(value).map(([k,v])=>[k,k==='text'&&typeof v==='string'?cleanKimiText(v,{reasoning}):cleanKimiResponse(v,reasoning)]));
+  }
+  return value;
+}
+function openingPending(text){
+  const prefix=text.trimStart(),open='<|open|>';
+  if(open.startsWith(prefix))return true;
+  return prefix.startsWith(open)&&channels.some(c=>c.startsWith(prefix.slice(open.length).trim()));
+}
+function safePrefix(text){
+  let end=text.trimEnd().length;
+  const at=text.lastIndexOf('<');
+  if(at>=0){
+    const tail=text.slice(at).trimEnd(),close='<|close|>';
+    if(close.startsWith(tail)||(tail.startsWith(close)&&channels.some(c=>c.startsWith(tail.slice(close.length).trim()))))end=Math.min(end,at);
+  }
+  return text.slice(0,end).trimEnd();
+}
+export function kimiSseTransform() {
+  const decoder=new StringDecoder('utf8');let buffer='',sequence=0;const pending=new Map();
+  function emit(stream,data){stream.push(`event: ${data.type}\ndata: ${JSON.stringify({...data,sequence_number:sequence++})}\n\n`);}
+  function flush(stream,key,explicit){
+    const state=pending.get(key);if(!state)return;
+    const text=cleanKimiText(explicit??state.raw,{reasoning:reasoningKind(state.template.type),channel:state.channel});
+    if(!text.startsWith(state.emitted))throw new Error('Inconsistent Kimi text stream');
+    const delta=text.slice(state.emitted.length);if(delta)emit(stream,{...state.template,delta});
+    pending.delete(key);return text;
+  }
+  function frame(stream,value){
+    const lines=value.split('\n');const payload=lines.filter(x=>x.startsWith('data:')).map(x=>x.slice(5).trimStart()).join('\n');
+    if(!payload||payload==='[DONE]'){stream.push(value+'\n\n');return;}
+    const data=JSON.parse(payload);if(typeof data.type!=='string'){stream.push(value+'\n\n');return;}const kind=data.type;
+    const key=`${kind.replace(/\.(delta|done)$/,'')}:${data.item_id??data.output_index??''}:${data.content_index??data.summary_index??0}`;
+    if(kind.endsWith('text.delta')&&typeof data.delta==='string'){
+      const state=pending.get(key)??{raw:'',emitted:'',template:data};state.raw+=data.delta;
+      state.channel=state.raw.match(/^\s*<\|open\|>\s*(response|think|analysis)\s*/)?.[1]??state.channel;
+      pending.set(key,state);
+      if(openingPending(state.raw))return;
+      const current=cleanKimiText(state.raw,{reasoning:reasoningKind(kind),channel:state.channel});const safe=safePrefix(current);
+      // Removing a newly arrived closing marker can shorten the withheld tail.
+      // Check the full clean text and never move the emitted position backward.
+      if(!current.startsWith(state.emitted))throw new Error('Inconsistent Kimi text stream');
+      const delta=safe.slice(state.emitted.length);
+      if(delta){state.emitted=safe;emit(stream,{...data,delta});}return;
+    }
+    if(kind.endsWith('text.done')){const text=flush(stream,key,data.text);if(text!==undefined)data.text=text;}
+    if(kind==='response.output_item.done')for(const [k,s] of pending)if(s.template.item_id===data.item?.id)flush(stream,k);
+    if(kind==='response.completed')for(const k of pending.keys())flush(stream,k);
+    emit(stream,cleanKimiResponse(data));
+  }
+  return new Transform({transform(chunk,_encoding,done){
+    try{buffer+=decoder.write(chunk);buffer=buffer.replace(/\r\n/g,'\n');let index;while((index=buffer.indexOf('\n\n'))>=0){const value=buffer.slice(0,index);buffer=buffer.slice(index+2);frame(this,value);}done();}catch(e){done(e);}
+  },flush(done){try{buffer+=decoder.end();if(buffer.trim())frame(this,buffer);for(const key of pending.keys())flush(this,key);done();}catch(e){done(e);}}});
+}

@@ -1,0 +1,30 @@
+"""Translate the verified Tinfoil catalog to Codex 0.164 model metadata."""
+from pathlib import Path
+import json,re,sys,urllib.request,hashlib
+
+BASE=Path(__file__).resolve().parent
+PROMPT=Path(__file__).with_name('codex-model-instructions.md')
+DEST=BASE/'profiles/tinfoil/models.json'
+
+def build(catalog,prompt):
+    models=[]
+    for m in catalog['data']:
+        if m.get('type') not in ['chat','safety'] or m.get('tool_calling') is not True:continue
+        if not any(e in ['/v1/responses','/v1/chat/completions'] for e in m.get('endpoints',[])):continue
+        assert re.fullmatch('[A-Za-z0-9._-]+',m['id'])
+        context=m.get('context_window');assert isinstance(context,int) and context>0
+        mapping=m.get('reasoning_params',{}).get('effort_map',{})
+        efforts=list(dict.fromkeys(['low','medium','high',*mapping.keys(),*mapping.values()])) if m.get('reasoning') else []
+        if m['id']=='kimi-k3':efforts=['low','high','max']
+        default='high' if m['id']=='kimi-k3' else 'medium' if efforts else None
+        models.append({'slug':m['id'],'display_name':m.get('name',m['id']),'description':m.get('description'),'default_reasoning_level':default,'supported_reasoning_levels':[{'effort':e,'description':e} for e in efforts],'shell_type':'unified_exec','visibility':'list','supported_in_api':True,'priority':len(models),'availability_nux':None,'upgrade':None,'model_messages':{'instructions_template':prompt},'include_apps_usage_instructions':False,'supports_reasoning_summary_parameter':True,'default_reasoning_summary':'none','support_verbosity':False,'default_verbosity':None,'apply_patch_tool_type':None,'truncation_policy':{'mode':'bytes','limit':10000},'context_window':context,'max_context_window':context,'effective_context_window_percent':95,'experimental_supported_tools':[],'input_modalities':['text','image'] if m.get('multimodal') else ['text'],'supports_search_tool':False,'auto_review_model_override':m['id']})
+    assert models and len({m['slug'] for m in models})==len(models)
+    return {'models':models}
+
+if __name__=='__main__':
+    dest=Path(sys.argv[1]) if len(sys.argv)>1 else DEST
+    catalog=json.load(urllib.request.urlopen('{{MODEL_ORIGIN}}/v1/models',timeout=10))
+    built=build(catalog,PROMPT.read_text())
+    data=json.dumps(built,indent=2)+'\n'
+    pending=dest.with_suffix('.pending');pending.write_text(data);pending.chmod(0o600);pending.replace(dest)
+    print(json.dumps({'model_count':len(built['models']),'catalog_sha256':hashlib.sha256(data.encode()).hexdigest()}))

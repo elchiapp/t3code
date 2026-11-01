@@ -1,0 +1,34 @@
+from pathlib import Path
+import json,os,plistlib,signal,sqlite3,subprocess,time
+ROOT=Path(__file__).resolve().parent
+LABEL='io.elchiapp.t3-local-vm-proxy'
+PLIST=Path('{{LAUNCH_AGENT_DIR}}')/(LABEL+'.plist')
+record=json.loads((ROOT/'local-server-process.json').read_text())
+assert not PLIST.exists(),'Preserve any existing service'
+db=sqlite3.connect('file:'+str(ROOT/'server/userdata/statev2.sqlite')+'?mode=ro',uri=True)
+assert db.execute("select count(*) from orchestration_v2_projection_provider_turns where status not in ('completed','failed','interrupted','cancelled')").fetchone()[0]==0,'Wait for local work'
+assert db.execute("select count(*) from orchestration_v2_projection_runtime_requests where status='pending'").fetchone()[0]==0,'Wait for local approvals'
+db.close()
+command=subprocess.check_output(['ps','-p',str(record['pid']),'-o','command='],text=True).strip()
+assert command==' '.join(record['args']),'Spawned server identity changed'
+args=['{{PYTHON_PATH}}',str(ROOT/'server-run.py')]
+spec={'Label':LABEL,'ProgramArguments':args,'WorkingDirectory':str(ROOT/'projects/local-browser'),'RunAtLoad':True,'KeepAlive':True,'ThrottleInterval':10,'ProcessType':'Interactive','Umask':63,'EnvironmentVariables':{'PATH':'{{USER_HOME}}/.n/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin','T3CODE_TELEMETRY_ENABLED':'false','T3CODE_DISABLE_AUTO_UPDATE':'true','DO_NOT_TRACK':'1'},'StandardOutPath':str(ROOT/'server.log'),'StandardErrorPath':str(ROOT/'server.log')}
+data=plistlib.dumps(spec)
+(ROOT/(LABEL+'.plist')).write_bytes(data)
+PLIST.parent.mkdir(exist_ok=True)
+with PLIST.open('xb') as f:f.write(data)
+PLIST.chmod(0o600)
+os.kill(record['pid'],signal.SIGTERM)
+for _ in range(50):
+    status=subprocess.run(['ps','-p',str(record['pid']),'-o','stat='],capture_output=True,text=True)
+    if status.returncode or status.stdout.strip().startswith('Z'):break
+    time.sleep(.2)
+else:raise RuntimeError('Owned server did not stop normally; no force kill')
+result=subprocess.run(['launchctl','bootstrap',f'gui/{os.getuid()}',str(PLIST)],capture_output=True,text=True)
+if result.returncode:
+    # Restore the exact owned process if launchd fails. Keep diagnostics private.
+    PLIST.rename(PLIST.with_suffix('.disabled'))
+    with (ROOT/'server.log').open('ab') as f:subprocess.Popen(args,cwd=record['cwd'],stdout=f,stderr=f,stdin=subprocess.DEVNULL,start_new_session=True)
+    raise RuntimeError('launchd bootstrap failed: '+result.stderr.strip())
+receipt={'label':LABEL,'plist':str(PLIST),'loopback_origin':'http://127.0.0.1:3219','starts_on_login':True,'previous_task_owned_pid':record['pid'],'native_desktop_profile_changed':False}
+(ROOT/'local-service-receipt.json').write_text(json.dumps(receipt,indent=2)+'\n');print(json.dumps(receipt,indent=2))

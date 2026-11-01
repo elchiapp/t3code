@@ -1,0 +1,8 @@
+#!/bin/sh
+set -eu
+case "${1:-}" in
+ app-server|exec)
+  {{PYTHON_PATH}} "{{LOCAL_T3_ROOT}}/catalog.py" >/dev/null || { test -s "{{LOCAL_T3_ROOT}}/profiles/tinfoil/models.json" || exit 1; }
+  ;;
+esac
+exec "{{CODEX_PATH}}" "$@"

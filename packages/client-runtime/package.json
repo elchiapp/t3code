@@ -478,6 +478,10 @@
     "./model-traits": {
       "types": "./src/modelTraits.ts",
       "default": "./src/modelTraits.ts"
+    },
+    "./attestation": {
+      "types": "./src/attestation/gate.ts",
+      "default": "./src/attestation/gate.ts"
     }
   },
   "scripts": {

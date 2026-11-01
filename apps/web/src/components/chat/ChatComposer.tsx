@@ -1,3 +1,5 @@
+import { useAttestation } from "../../attestation/useAttestation";
+import { AttestationIndicator } from "./AttestationIndicator";
 import { useComposerTypingGuard } from "./useComposerTypingGuard";
 import { insertAttachmentReferencesForDraft } from "./composerAttachmentReferences";
 import { DESKTOP_PASTE_AS_TEXT_EVENT } from "../../lib/desktopPasteAsText";
@@ -967,7 +969,9 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     selectedProviderEntry?.snapshot,
     selectedModel,
   );
+  const attestation = useAttestation(environmentId);
   const sendDisabledReason =
+    (!attestation.canSend ? attestation.status.message : null) ??
     externalSendDisabledReason ??
     (multipleModelSelections?.length === 0 ? "Select at least one model." : null) ??
     (activePendingProgress
@@ -2082,6 +2086,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     submissionIntent?: ComposerSubmissionIntent,
   ) => {
     if (
+      !attestation.isCurrent() ||
       noProviderAvailable ||
       isSendDisabled ||
       !readEnvironmentScope(environmentId, AuthOrchestrationOperateScope)
@@ -3382,6 +3387,11 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
       data-chat-composer-form="true"
       {...threadContextDropTargetProps()}
     >
+      <AttestationIndicator
+        status={attestation.status}
+        canSend={attestation.canSend}
+        onRetry={attestation.retry}
+      />
       {composerControlsCollapsed && restingControlsHost
         ? createPortal(
             <div
@@ -3691,6 +3701,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
                                 : DEFAULT_COMPOSER_PLACEHOLDER
                     }
                     disabled={
+                      !attestation.canSend ||
                       isConnecting ||
                       projectSelectionRequired ||
                       isChoiceOnlyPendingQuestion ||

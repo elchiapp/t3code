@@ -1,0 +1,10 @@
+// Policy checks run only after the pinned official SDK verified the public evidence.
+export function classifyInferenceRelease(doc, policy, endpoint, ownerApprovals = []) {
+    if (endpoint !== policy.tinfoil.enclaveOrigin) throw Error('Selected inference endpoint is not approved by this signed verifier');
+    if (doc?.securityVerified !== true) throw Error('Inference cryptographic verification did not pass');
+    if (!/^v[0-9]+\.[0-9]+\.[0-9]+$/.test(doc.releaseTag ?? '') || !/^[a-f0-9]{64}$/.test(doc.releaseDigest ?? '')) throw Error('Inference release identity is malformed');
+    if (typeof doc.hpkePublicKey !== 'string' || !doc.hpkePublicKey || typeof doc.tlsPublicKey !== 'string' || !doc.tlsPublicKey) throw Error('Attested inference key unavailable');
+    const approved = policy.tinfoil.approvedReleases.some(r => r.tag === doc.releaseTag && r.digest === doc.releaseDigest);
+    const ownerApproved = ownerApprovals.some(r => r.endpoint === endpoint && r.tag === doc.releaseTag && r.digest === doc.releaseDigest);
+    return {status: approved || ownerApproved ? 'verified' : 'release_not_approved', releaseTag: doc.releaseTag, releaseDigest: doc.releaseDigest, ...(ownerApproved && !approved ? {approvalSource:'owner_device'} : {})};
+}

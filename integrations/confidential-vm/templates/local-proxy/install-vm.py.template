@@ -1,0 +1,34 @@
+from pathlib import Path
+import hashlib,json,os,pwd,shutil,socket,subprocess
+ROOT=Path(__file__).resolve().parent
+DEST=Path('{{VM_LOCAL_PROXY_ROOT}}')
+SERVICE='turing-local-inference.service'
+def run(args):return subprocess.run(args,check=True,capture_output=True,text=True)
+assert os.geteuid()==0 and Path('/srv/turing').is_mount()
+receipt=json.loads((ROOT/'source-receipt.json').read_text())
+for name,digest in receipt['vm_files'].items():assert hashlib.file_digest((ROOT/name).open('rb'),'sha256').hexdigest()==digest,name
+assert ROOT==DEST and not (Path('/etc/systemd/system')/SERVICE).exists()
+os.chown(ROOT,0,0);ROOT.chmod(0o755)
+before=json.loads(run(['tailscale','serve','status','--json']).stdout)
+assert '8447' not in before.get('TCP',{})
+with socket.socket() as probe:probe.bind(('127.0.0.1',3413))
+(ROOT/'serve-before.json').write_text(json.dumps(before,indent=2)+'\n')
+(ROOT/'config.json').write_text(json.dumps({'owner':'{{TAILNET_OWNER}}'})+'\n')
+account=pwd.getpwnam('turing');os.chown(ROOT/'config.json',0,account.pw_gid);(ROOT/'config.json').chmod(0o640)
+for name in receipt['vm_files']:(ROOT/name).chmod(0o644);os.chown(ROOT/name,0,0)
+shutil.copyfile(ROOT/SERVICE,Path('/etc/systemd/system')/SERVICE)
+run(['systemd-analyze','verify',str(Path('/etc/systemd/system')/SERVICE)])
+run(['systemctl','daemon-reload']);run(['systemctl','enable','--now',SERVICE])
+try:
+    run(['tailscale','serve','--bg','--https=8447','http://127.0.0.1:3413'])
+    after=json.loads(run(['tailscale','serve','status','--json']).stdout)
+    for section,value in before.items():
+        if isinstance(value,dict):
+            for key,prior in value.items():assert after.get(section,{}).get(key)==prior
+        else:assert after.get(section)==value
+    assert not any('8447' in key and value for key,value in after.get('AllowFunnel',{}).items())
+except Exception:
+    subprocess.run(['tailscale','serve','--https=8447','off'],capture_output=True)
+    run(['systemctl','disable','--now',SERVICE]);raise
+result={'service':run(['systemctl','is-active',SERVICE]).stdout.strip(),'url':'{{MODEL_ORIGIN}}','loopback_backend':'127.0.0.1:3413','upstream':'127.0.0.1:3412','owner_identity_required':True,'existing_routes_unchanged':True,'funnel_enabled_for_new_port':False,'images':{n:run(['docker','inspect','--format','{{.Image}}',n]).stdout.strip() for n in ['turing-codex-inference-1','turing-codex-codex-1']}}
+(ROOT/'install-receipt.json').write_text(json.dumps(result,indent=2)+'\n');print(json.dumps(result,indent=2))

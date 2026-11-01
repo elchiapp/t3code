@@ -1,3 +1,4 @@
+import { clientAttestation } from "@t3tools/client-runtime/attestation";
 import {
   EventId,
   GUEST_COMMAND_OUTPUT_ROUTE,
@@ -23,6 +24,36 @@ import "~/index.css";
 import { render } from "../../../test/render";
 import { makeThreadProjectionFixture } from "../../test-fixtures";
 import { GuestPage } from "./GuestPage";
+
+const gate = vi.hoisted(() => ({ allowed: true }));
+vi.mock("../../attestation/useOriginAttestation", () => ({
+  useOriginAttestation: () => ({
+    canSend: gate.allowed,
+    isCurrent: () => gate.allowed,
+    retry: () => {},
+    status: {
+      origin: "http://fixture.example",
+      phase: gate.allowed ? "verified" : "failed",
+      message: "Fixture verification",
+      verifiedAt: null,
+      expiresAt: null,
+      checks: {},
+    },
+  }),
+}));
+function verificationFixture(allowed = true): Disposable {
+  const previous = gate.allowed;
+  gate.allowed = allowed;
+  const spy = vi.spyOn(clientAttestation, "authorize").mockImplementation(async () => {
+    if (!gate.allowed) throw new Error("Verification failed");
+  });
+  return {
+    [Symbol.dispose]() {
+      gate.allowed = previous;
+      spy.mockRestore();
+    },
+  };
+}
 
 const SHARE_ID = "share-1";
 const encodeEvent = Schema.encodeSync(Schema.fromJsonString(Schema.toCodecJson(GuestStreamEvent)));
@@ -216,7 +247,25 @@ function visit(path: string): Disposable {
 }
 
 describe("GuestPage", () => {
+  it("disables guest chat and sends no POST when verification fails", async () => {
+    using _verification = verificationFixture(false);
+    using _page = visit(`/guest?share=${SHARE_ID}`);
+    using fetchSpy = vi
+      .spyOn(window, "fetch")
+      .mockImplementation(async () => new Response(null, { status: 204 }));
+    using _stream = vi
+      .spyOn(window, "EventSource")
+      .mockImplementation(fakeEventSource(opening([run("run-1", 1, "completed")], items)) as never);
+    await using screen = await render(<GuestPage />);
+    await expect.element(screen.getByText("Fixture verification")).toBeVisible();
+    await expect.element(screen.getByRole("textbox", { name: "Message" })).toBeDisabled();
+    await expect.element(screen.getByRole("button", { name: "Send", exact: true })).toBeDisabled();
+    await userEvent.keyboard("private draft{Enter}");
+    expect(fetchSpy.mock.calls.filter(([, options]) => options?.method === "POST")).toHaveLength(0);
+  });
+
   it("shows the shared thread in the real timeline without opening an environment connection", async () => {
+    using _verification = verificationFixture();
     using _page = visit(`/guest?share=${SHARE_ID}`);
     using _session = vi
       .spyOn(window, "fetch")
@@ -250,6 +299,7 @@ describe("GuestPage", () => {
   });
 
   it("sends attached files with the message, as form data", async () => {
+    using _verification = verificationFixture();
     using _page = visit(`/guest?share=${SHARE_ID}`);
     using fetchSpy = vi
       .spyOn(window, "fetch")
@@ -283,6 +333,7 @@ describe("GuestPage", () => {
   });
 
   it("follows the end as replies stream, and shows the guest's own message even after they scrolled up", async () => {
+    using _verification = verificationFixture();
     using _page = visit(`/guest?share=${SHARE_ID}`);
     using _session = vi
       .spyOn(window, "fetch")

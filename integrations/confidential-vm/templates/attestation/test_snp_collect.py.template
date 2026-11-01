@@ -1,0 +1,29 @@
+import ctypes,struct,unittest,uuid
+from snp_collect import decode_cert_table,decode_report,ReportRequest,ExtendedRequest,GuestCommand
+
+GUID=uuid.UUID('63da758d-e664-4564-adc5-f4b93be8accd')
+def table(offset=48,length=3):return GUID.bytes+struct.pack('<II',offset,length)+bytes(24)+b'abc'
+class CollectorTests(unittest.TestCase):
+    def test_layout(self):self.assertEqual(tuple(map(ctypes.sizeof,[ReportRequest,ExtendedRequest,GuestCommand])),(96,112,32))
+    def test_valid_table(self):self.assertEqual(decode_cert_table(table()),{str(GUID):b'abc'})
+    def test_truncated_header(self):
+        with self.assertRaises(ValueError):decode_cert_table(b'bad')
+    def test_range_outside_buffer(self):
+        with self.assertRaises(ValueError):decode_cert_table(table(50,3))
+    def test_range_inside_header(self):
+        with self.assertRaises(ValueError):decode_cert_table(table(24,3))
+    def test_missing_terminator(self):
+        with self.assertRaises(ValueError):decode_cert_table(GUID.bytes+struct.pack('<II',24,3)+b'abc')
+    def test_valid_report(self):
+        b=bytearray(4000);struct.pack_into('<II',b,0,0,1184);b[32+0x50:32+0x90]=bytes([3])*64
+        self.assertEqual(len(decode_report(bytes(b),bytes([3])*64)),1184)
+    def test_nonce_mismatch(self):
+        b=bytearray(4000);struct.pack_into('<II',b,0,0,1184)
+        with self.assertRaises(ValueError):decode_report(bytes(b),bytes([3])*64)
+    def test_firmware_failure(self):
+        b=bytearray(4000);struct.pack_into('<II',b,0,1,1184)
+        with self.assertRaises(ValueError):decode_report(bytes(b),bytes(64))
+    def test_bad_report_size(self):
+        b=bytearray(4000);struct.pack_into('<II',b,0,0,4001)
+        with self.assertRaises(ValueError):decode_report(bytes(b),bytes(64))
+if __name__=='__main__':unittest.main()

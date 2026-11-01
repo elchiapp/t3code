@@ -18,6 +18,11 @@ const mocks = vi.hoisted(() => ({
   readBase64: vi.fn(),
 }));
 
+vi.mock("@t3tools/client-runtime/attestation", () => ({
+  clientAttestation: { authorize: async () => {} },
+  normalizeAttestationOrigin: (value: string) => new URL(value).origin,
+}));
+
 vi.mock("@t3tools/client-runtime/state/runtime", () => ({
   createEnvironmentRpcCommand: () => Symbol("rpc-command"),
   executeAtomQuery: mocks.executeAtomQuery,

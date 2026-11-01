@@ -20,6 +20,8 @@ import { RpcClientError } from "effect/rpc";
 import * as EnvironmentSupervisor from "../connection/supervisor.ts";
 import type { WsRpcProtocolClient } from "../rpc/protocol.ts";
 import type { RpcSession } from "../rpc/session.ts";
+import { clientAttestation, normalizeAttestationOrigin } from "../attestation/gate.ts";
+import { requiresClientAttestation } from "../attestation/commands.ts";
 
 export class EnvironmentRpcUnavailableError extends Schema.TaggedError<EnvironmentRpcUnavailableError>()(
   "EnvironmentRpcUnavailableError",
@@ -182,10 +184,29 @@ const authorizeRequest = Effect.fn("EnvironmentRpc.authorize")(function* (
   method: string,
   input: unknown,
 ) {
-  if (clientRpcRequiredScopes(method, input).length === 0) return;
-  const supervisor = yield* EnvironmentSupervisor.EnvironmentSupervisor;
-  const guard = yield* RpcPermissionGuard;
-  yield* guard.authorize(supervisor.target.environmentId, method, input);
+  const authorizationSupervisor = yield* EnvironmentSupervisor.EnvironmentSupervisor;
+  if (clientRpcRequiredScopes(method, input).length > 0) {
+    const guard = yield* RpcPermissionGuard;
+    yield* guard.authorize(authorizationSupervisor.target.environmentId, method, input);
+  }
+  if (requiresClientAttestation(method, input)) {
+    const supervisor = yield* EnvironmentSupervisor.EnvironmentSupervisor;
+    const prepared = yield* SubscriptionRef.get(supervisor.prepared);
+    if (Option.isNone(prepared))
+      return yield* new EnvironmentRpcUnavailableError({
+        environmentId: supervisor.target.environmentId,
+        message: "Connect and verify this environment before sending.",
+      });
+    yield* Effect.tryPromise({
+      try: () =>
+        clientAttestation.authorize(normalizeAttestationOrigin(prepared.value.httpBaseUrl)),
+      catch: (error) =>
+        new EnvironmentRpcUnavailableError({
+          environmentId: supervisor.target.environmentId,
+          message: error instanceof Error ? error.message : "Device verification is required.",
+        }),
+    });
+  }
 });
 
 export const requestGuarded = Effect.fn("EnvironmentRpc.request")(function* <
@@ -197,6 +218,7 @@ export const requestGuarded = Effect.fn("EnvironmentRpc.request")(function* <
     "rpc.method": tag,
   });
   const session = yield* currentSession();
+  const preparedBeforeVerification = yield* SubscriptionRef.get(supervisor.prepared);
   yield* authorizeRequest(tag, input);
   const observer = yield* EnvironmentRpcRequestObserver;
   const method = session.client[tag] as (
@@ -207,7 +229,22 @@ export const requestGuarded = Effect.fn("EnvironmentRpc.request")(function* <
     environmentLabel: supervisor.target.label,
     method: tag,
   });
-  return yield* method(input).pipe(Effect.ensuring(completeObservation));
+  return yield* Effect.gen(function* () {
+    if (requiresClientAttestation(tag, input)) {
+      const current = yield* SubscriptionRef.get(supervisor.session);
+      const prepared = yield* SubscriptionRef.get(supervisor.prepared);
+      if (
+        Option.getOrUndefined(current) !== session ||
+        Option.getOrUndefined(prepared) !== Option.getOrUndefined(preparedBeforeVerification)
+      ) {
+        return yield* new EnvironmentRpcUnavailableError({
+          environmentId: supervisor.target.environmentId,
+          message: "The connection changed during verification. Retry without losing your draft.",
+        });
+      }
+    }
+    return yield* method(input);
+  }).pipe(Effect.ensuring(completeObservation));
 });
 
 export function runStreamGuarded<TTag extends EnvironmentStreamCommandRpcTag>(

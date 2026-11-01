@@ -1,0 +1,37 @@
+from pathlib import Path
+import hashlib,json,os,shutil,subprocess,sqlite3
+ROOT=Path(__file__).resolve().parent
+BASE=Path('{{VM_T3_ROOT}}')
+PROFILE=Path('/etc/apparmor.d/t3-bwrap-userns-restrict')
+DROPIN=Path('/etc/systemd/system/turing-t3-multi.service.d/20-bwrap-path.conf')
+def run(args,**kwargs):
+    return subprocess.run(args,check=True,capture_output=True,text=True,**kwargs)
+def sha(p):return hashlib.sha256(p.read_bytes()).hexdigest()
+assert os.geteuid()==0
+assert not PROFILE.exists() and not DROPIN.exists(), 'Refuse existing policy'
+assert not (BASE/'sandbox').exists(), 'Refuse existing sandbox tools'
+sysctls={key:run(['sysctl','-n',key]).stdout.strip() for key in ['kernel.apparmor_restrict_unprivileged_userns','kernel.unprivileged_userns_clone','user.max_user_namespaces']}
+assert sysctls['kernel.apparmor_restrict_unprivileged_userns']=='1'
+run(['apparmor_parser','-Q',str(ROOT/'t3-bwrap-userns-restrict')])
+db=sqlite3.connect('file:'+str(BASE/'state/userdata/statev2.sqlite')+'?mode=ro',uri=True)
+assert db.execute("select count(*) from orchestration_v2_projection_provider_turns where status not in ('completed','failed','interrupted','cancelled')").fetchone()[0]==0, 'Wait for active turns'
+db.close()
+(BASE/'sandbox/bin').mkdir(parents=True,mode=0o755)
+shutil.copyfile('/usr/bin/bwrap',BASE/'sandbox/bin/bwrap');(BASE/'sandbox/bin/bwrap').chmod(0o755)
+assert sha(BASE/'sandbox/bin/bwrap')==sha(Path('/usr/bin/bwrap'))
+shutil.copyfile(ROOT/'t3-bwrap-userns-restrict',PROFILE);PROFILE.chmod(0o644)
+run(['apparmor_parser','-r',str(PROFILE)])
+probe=run(['/usr/sbin/runuser','-u','turing','--',str(BASE/'sandbox/bin/bwrap'),'--unshare-user','--unshare-net','--dev-bind','/','/','/bin/true'])
+run(['apt-get','install','-y','--no-install-recommends','ripgrep=14.1.0-1'],env={**os.environ,'DEBIAN_FRONTEND':'noninteractive'})
+DROPIN.parent.mkdir(exist_ok=True)
+shutil.copyfile(ROOT/'20-bwrap-path.conf',DROPIN);DROPIN.chmod(0o644)
+config=BASE/'providers/codex-tinfoil/config.toml'
+old=config.read_bytes();(ROOT/'codex-config.before.toml').write_bytes(old);(ROOT/'codex-config.before.toml').chmod(0o600)
+assert b'approvals_reviewer' not in old and b'approval_policy' not in old and b'sandbox_mode' not in old
+config.write_bytes(b'approvals_reviewer = "user"\napproval_policy = "on-request"\nsandbox_mode = "workspace-write"\n'+old)
+shutil.chown(config,user='turing',group='turing');config.chmod(0o600)
+run(['systemctl','daemon-reload']);run(['systemctl','restart','turing-t3-multi.service'])
+after={key:run(['sysctl','-n',key]).stdout.strip() for key in sysctls}
+assert after==sysctls
+receipt={'sysctls_unchanged':after,'private_bwrap_sha256':sha(BASE/'sandbox/bin/bwrap'),'profile_sha256':sha(PROFILE),'dropin_sha256':sha(DROPIN),'config_before_sha256':hashlib.sha256(old).hexdigest(),'config_after_sha256':sha(config),'ripgrep':run(['rg','--version']).stdout.splitlines()[0],'bwrap_probe_exit':probe.returncode,'reviewer':'user profile default; affected T3 Auto thread still requires changing to Edit','service':run(['systemctl','is-active','turing-t3-multi.service']).stdout.strip()}
+(ROOT/'install-receipt.json').write_text(json.dumps(receipt,indent=2)+'\n');print(json.dumps(receipt,indent=2))

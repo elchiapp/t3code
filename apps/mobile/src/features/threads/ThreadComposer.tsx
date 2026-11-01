@@ -1,3 +1,4 @@
+import { useAttestation } from "../attestation/useAttestation";
 import { useSidebarWorkspaceTabs } from "../workspace/useSystemWorkspaceTabBar";
 import { Button } from "../../components/ui/Button";
 import * as Dialog from "../../components/ui/Dialog";
@@ -553,8 +554,12 @@ export const ThreadComposer = function ThreadComposer(props: ThreadComposerProps
     onChangeDraftMessage: (text) => setComposerDraftText(composerDraftKey, text),
     onChangeSelection: composerMenu.onSelectionChange,
   });
+  const attestation = useAttestation(props.environmentId);
   const isSubmissionLocked =
-    props.interactionLocked === true || queuedEdit?.saving === true || voiceInput.blocksSubmission;
+    !attestation.canSend ||
+    props.interactionLocked === true ||
+    queuedEdit?.saving === true ||
+    voiceInput.blocksSubmission;
   const voicePresentation = resolveVoiceComposerPresentation(
     voiceInput.state,
     voiceInput.elapsedSeconds,
@@ -580,6 +585,7 @@ export const ThreadComposer = function ThreadComposer(props: ThreadComposerProps
   });
   const contextImports = useAtomValue(composerContextImportsAtom);
   const sendBlockedReason =
+    (!attestation.canSend ? attestation.status.message : null) ??
     (queuedEdit?.saving === true ? "Saving…" : null) ??
     props.sendBlockedReason ??
     (pendingPastedTextAttachmentCount > 0 ? "Attaching pasted text" : null) ??
@@ -639,6 +645,7 @@ export const ThreadComposer = function ThreadComposer(props: ThreadComposerProps
     setComposerEditing(false);
   };
   const handleSend = async (followUp?: ActiveTurnComposerAction) => {
+    if (!attestation.isCurrent()) return;
     if (
       isSubmissionLocked ||
       sendBlockedReason !== null ||
@@ -806,6 +813,17 @@ export const ThreadComposer = function ThreadComposer(props: ThreadComposerProps
         style={{ maxWidth: props.contentMaxWidth }}
       >
         {props.draftControls}
+        <Text
+          accessibilityRole="text"
+          accessibilityLiveRegion="polite"
+          className="px-1 pb-1 text-xs text-muted-foreground"
+        >
+          {attestation.canSend
+            ? "● Attestation verified"
+            : attestation.status.phase === "checking"
+              ? "● Verifying connection"
+              : "● Verification unavailable. Chat disabled."}
+        </Text>
         {!isSubmissionLocked &&
         composerMenu.trigger &&
         (composerMenu.items.length > 0 || composerMenu.trigger.kind === "pull-request") ? (
@@ -945,7 +963,7 @@ export const ThreadComposer = function ThreadComposer(props: ThreadComposerProps
                     size={hasSidebarTabBar ? "large" : "regular"}
                     accessibilityLabel="Resume queue"
                     icon="play"
-                    disabled={!props.canOperateThread || resumingQueue}
+                    disabled={!props.canOperateThread || !attestation.canSend || resumingQueue}
                     onPress={() => void handleResumeQueue()}
                   />
                 ) : (
@@ -1168,7 +1186,7 @@ export const ThreadComposer = function ThreadComposer(props: ThreadComposerProps
                     <ComposerActionButton
                       accessibilityLabel="Resume queue"
                       icon="play"
-                      disabled={!props.canOperateThread || resumingQueue}
+                      disabled={!props.canOperateThread || !attestation.canSend || resumingQueue}
                       onPress={() => void handleResumeQueue()}
                     />
                   ) : voicePresentation.showsSend ? (

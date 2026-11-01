@@ -1,0 +1,81 @@
+"""Install only the separately named T3 public-evidence service as root."""
+import hashlib
+import json
+import os
+from pathlib import Path
+import socket
+import subprocess
+import sys
+
+DEST = Path('{{VM_ATTESTATION_ROOT}}')
+UNIT = Path('/etc/systemd/system/turing-t3-attestation.service')
+NODE = Path('{{VM_NODE_PATH}}')
+NODE_SHA256 = '08f12d42fb304468e8ee86247fe686aae5b225836ea65e9d6566c11ae6ba2e8e'
+INACTIVE_UNIT_SHA256 = 'bf72296acf3d2bdaabe820a0598e5c5375de245855d6fc49fdde0f95493834a9'
+FILES = {
+    'vm-proof-server.mjs', 'endpoint-binding.mjs', 'gate-server.mjs',
+    'snp_collect.py', 'turing-t3-attestation.service'
+}
+
+
+def install(bundle):
+    if os.geteuid() != 0:
+        raise RuntimeError('Root installation is required')
+    if set(bundle) != FILES:
+        raise ValueError('Unexpected source bundle')
+    if not Path('/dev/sev-guest').is_char_device():
+        raise RuntimeError('The existing SNP device is absent')
+    if not os.path.ismount('/srv/turing'):
+        raise RuntimeError('The encrypted data volume is not mounted')
+    if (not NODE.is_file() or NODE.stat().st_uid != 0
+            or not os.access(NODE, os.X_OK)
+            or hashlib.sha256(NODE.read_bytes()).hexdigest() != NODE_SHA256):
+        raise RuntimeError('The pinned existing Node runtime differs')
+    def may_replace(p, text):
+        if p.is_symlink():
+            return False
+        if not p.exists() or p.read_bytes() == text:
+            return True
+        prior = hashlib.sha256(p.read_bytes()).hexdigest()
+        inactive = subprocess.run(['systemctl', 'is-active', UNIT.name],
+                                  capture_output=True, text=True, timeout=5)
+        return (p in (UNIT, DEST / UNIT.name)
+                and prior == INACTIVE_UNIT_SHA256
+                and inactive.stdout.strip() == 'inactive')
+    contents = {}
+    for name, item in bundle.items():
+        text = item['source'].encode()
+        if len(text) > 65536 or hashlib.sha256(text).hexdigest() != item['sha256']:
+            raise ValueError('Source hash mismatch')
+        contents[name] = text
+    for name, text in contents.items():
+        p = DEST / name
+        if not may_replace(p, text):
+            raise RuntimeError('Existing destination differs; refusing overwrite')
+    if not may_replace(UNIT, contents[UNIT.name]):
+        raise RuntimeError('Existing service differs; refusing overwrite')
+    with socket.socket() as probe:
+        probe.bind(('{{VM_TAILSCALE_IP}}', 3430))
+    DEST.mkdir(mode=0o755, exist_ok=True)
+    if DEST.is_symlink() or DEST.stat().st_uid != 0:
+        raise RuntimeError('Destination is not a root-owned directory')
+    for name, text in contents.items():
+        p = DEST / name
+        p.write_bytes(text)
+        p.chmod(0o644)
+        os.chown(p, 0, 0)
+    UNIT.write_bytes(contents[UNIT.name])
+    UNIT.chmod(0o644)
+    subprocess.run(['systemd-analyze', 'verify', str(UNIT)], check=True, timeout=15)
+    subprocess.run(['systemctl', 'daemon-reload'], check=True, timeout=15)
+    subprocess.run(['systemctl', 'enable', '--now', UNIT.name], check=True, timeout=20)
+    print(json.dumps({
+        'installed': True, 'unit': UNIT.name, 'scope': 'public evidence only',
+        'hardware_verified': False, 'production_provider_changed': False,
+        'source_hashes': {name: hashlib.sha256(text).hexdigest()
+                          for name, text in contents.items()}
+    }))
+
+
+if __name__ == '__main__':
+    install(json.load(sys.stdin))

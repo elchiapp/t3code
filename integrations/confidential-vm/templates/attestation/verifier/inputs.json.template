@@ -1,0 +1,11 @@
+{
+  "coreSource": "private-mesh owned verifier based on existing Turing evaluator; component-wise AMD firmware floor",
+  "coreSha256": "8d8dc0c00787be98e70d1bed5511c636c87be8d58c8be9a41d16f54c42f0f189",
+  "publicPolicySha256": "9cc9af6c4ed94de206f0a706541d99e0c4172ac8f016251a9c8fe1d45d47f43e",
+  "sdkRepository": "tinfoilsh/tinfoil-js",
+  "sdkRevision": "35ef04e9a74f1c35b13d09d844cbbd70329e449c",
+  "sdkLicense": "Apache-2.0",
+  "sdkBuild": "npm run build -w @tinfoilsh/verifier; existing locked dependencies",
+  "scope": "Owner-device cryptographic verifier; receipt remains delegated to other native clients",
+  "vcekBindingSha256": "2f7102f5ff3c107ebbe9668228382a32e018260ca736816d00f238dcf63c5948"
+}

@@ -1,0 +1,59 @@
+import {readFileSync,readdirSync} from 'node:fs';
+import {createHash} from 'node:crypto';
+import {execFileSync} from 'node:child_process';
+import {createRequire} from 'node:module';
+import {join} from 'node:path';
+import {pathToFileURL} from 'node:url';
+import {createChallenge,expectedReportData,verifySnpEvidence,validatePolicy,checkChallengeShape} from './verifier/verifier-core.mjs';
+import {createVcekBindingVerifier} from './verifier/vcek-bindings.mjs';
+import {classifyInferenceRelease} from './verifier/inference-release-policy.mjs';
+import {readApprovals} from './release-approvals.mjs';
+
+const root=new URL('.',import.meta.url);
+const hash=bytes=>createHash('sha256').update(bytes).digest('hex');
+const inputs=JSON.parse(readFileSync(new URL('verifier/inputs.json',root)));
+for(const [name,key] of [['verifier-core.mjs','coreSha256'],['vcek-bindings.mjs','vcekBindingSha256'],['policy.json','publicPolicySha256']]){
+  if(hash(readFileSync(new URL('verifier/'+name,root)))!==inputs[key])throw Error('Local verifier input hash mismatch: '+name);
+}
+export const policy=validatePolicy(JSON.parse(readFileSync(new URL('verifier/policy.json',root))));
+export const proxyOrigin='{{MODEL_ORIGIN}}';
+const sdk='{{TINFOIL_SDK_ROOT}}';
+if(execFileSync('/usr/bin/git',['-C',sdk,'rev-parse','HEAD'],{encoding:'utf8'}).trim()!==inputs.sdkRevision)throw Error('Pinned Tinfoil SDK revision mismatch');
+const sdkRequire=createRequire(join(sdk,'package.json'));
+const {Verifier}=await import(pathToFileURL(join(sdk,'packages/verifier/dist/index.js')));
+const {CertificateChain}=await import(pathToFileURL(join(sdk,'packages/verifier/dist/sev/cert-chain.js')));
+const {X509Certificate}=await import(pathToFileURL(sdkRequire.resolve('@freedomofpress/sigstore-browser')));
+const verifyVcekBindings=createVcekBindingVerifier({CertificateChain,X509Certificate});
+
+export async function newChallenge(){
+  const {privateKey,...challenge}=await createChallenge({policy,origin:policy.evidenceOrigin});
+  return challenge;
+}
+export async function hardwareProof(challenge,bundle,now=Date.now()){
+  checkChallengeShape(challenge,policy,now);
+  const expected=await expectedReportData(challenge);
+  const result=await verifySnpEvidence(bundle.snp,{policy,expectedReportDataBytes:expected,now,verifyVcekBindings});
+  return {state:'verified',product:result.productLine,measurement:result.measurementHex,currentTcb:result.currentTcbHex,scope:'Hardware and firmware only; proxy software and key custody are not measured.'};
+}
+export async function boundedJson(response,maxBytes=512*1024){
+  if(!response.ok)throw Error('Evidence endpoint returned HTTP '+response.status);
+  if(!response.body)throw Error('Evidence body is missing');
+  const reader=response.body.getReader();let size=0;const chunks=[];
+  try{for(;;){const {done,value}=await reader.read();if(done)break;size+=value.byteLength;if(size>maxBytes)throw Error('Evidence exceeds the size limit');chunks.push(value);}}
+  finally{await reader.cancel().catch(()=>{});}
+  return JSON.parse(Buffer.concat(chunks).toString('utf8'));
+}
+export async function collectHardware(challenge){
+  return boundedJson(await fetch(policy.evidenceOrigin+'/api/privacy/evidence',{
+    method:'POST',headers:{Origin:policy.evidenceOrigin,'Content-Type':'application/json'},body:JSON.stringify(challenge),redirect:'error',signal:AbortSignal.timeout(20000)
+  }));
+}
+export async function inferenceProof({ownerApprovals=readApprovals()}={}){
+  const verifier=new Verifier({serverURL:policy.tinfoil.enclaveOrigin,configRepo:policy.tinfoil.configRepo});
+  let timer;
+  try{await Promise.race([verifier.verify(),new Promise((_,reject)=>{timer=setTimeout(()=>reject(Error('Independent Tinfoil verification timed out')),35000);})]);}
+  finally{clearTimeout(timer);}
+  const document=verifier.getVerificationDocument();
+  const result=classifyInferenceRelease(document,policy,policy.tinfoil.enclaveOrigin,ownerApprovals);
+  return {state:result.status==='verified'?'verified':'approval_required',releaseTag:result.releaseTag,releaseDigest:result.releaseDigest,approvalSource:result.approvalSource??(result.status==='verified'?'pinned_policy':undefined),scope:'Independent enclave and public-key verification; not proof of mutable VM proxy software.'};
+}

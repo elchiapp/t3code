@@ -1,0 +1,42 @@
+export const BASIC_CHECKS=['hardware','inference','tls_key_commitment'];
+export const COMPLETE_CHECKS=[...BASIC_CHECKS,'proxy_workload','key_custody','inference_route'];
+
+export class AttestationGate {
+  #collect;#now;#mono;#policyCurrent;#deadline=0;#pending;#receipt;#generation=0;
+  constructor({collect,now=Date.now,monotonic=()=>performance.now(),scope='hardware-and-inference',maxAgeMs=60000,policyCurrent=()=>true}){
+    if(!['hardware-and-inference','complete'].includes(scope)||maxAgeMs<1000||maxAgeMs>60000)throw Error('Invalid attestation policy');
+    this.#collect=collect;this.#now=now;this.#mono=monotonic;this.#policyCurrent=policyCurrent;this.scope=scope;this.maxAgeMs=maxAgeMs;
+    this.last={phase:'not_checked',checks:{},scope,allProofsComplete:false};
+  }
+  required(){return this.scope==='complete'?COMPLETE_CHECKS:BASIC_CHECKS;}
+  valid(receipt){try{return receipt===this.#receipt&&this.#now()<receipt.expiresAt&&this.#mono()<this.#deadline&&this.required().every(k=>receipt.checks[k]?.state==='verified')&&this.#policyCurrent(receipt);}catch{return false;}}
+  status(){
+    const usable=this.#receipt&&this.valid(this.#receipt);
+    return {...this.last,phase:usable?'verified_partial':this.#pending?'checking':this.last.phase==='verified_partial'?'expired':this.last.phase,ready:!!usable,allProofsComplete:!!usable&&COMPLETE_CHECKS.every(k=>this.#receipt.checks[k]?.state==='verified'),requiredChecks:this.required()};
+  }
+  async refresh(){
+    if(this.#pending)return this.#pending;
+    const started=this.#now();const startedMono=this.#mono();const generation=++this.#generation;
+    this.#receipt=undefined;this.last={phase:'checking',checks:{},scope:this.scope,allProofsComplete:false};
+    this.#pending=(async()=>{
+      await Promise.resolve();
+      try{
+        const result=await this.#collect();
+        const expiresAt=Math.min(started+this.maxAgeMs,result.expiresAt??started+this.maxAgeMs);
+        if(this.#now()>=expiresAt)throw Error('Verification expired before completion');
+        const receipt={...result,expiresAt,generation};
+        const missing=this.required().filter(k=>receipt.checks?.[k]?.state!=='verified');
+        this.last={phase:missing.length?'blocked':'verified_partial',scope:this.scope,checks:receipt.checks??{},tlsSpkiSha256:receipt.tlsSpkiSha256,verifiedAt:this.#now(),expiresAt,missingChecks:missing,allProofsComplete:false};
+        if(missing.length)throw Error('Attestation blocked: '+missing.join(', '));
+        this.#receipt=receipt;this.#deadline=startedMono+this.maxAgeMs;return receipt;
+      }catch(error){this.#receipt=undefined;this.last={...this.last,phase:'blocked',error:error.message};throw error;}
+      finally{this.#pending=undefined;}
+    })();
+    return this.#pending;
+  }
+  async authorize(){
+    const receipt=this.#receipt&&this.valid(this.#receipt)?this.#receipt:await this.refresh();
+    if(!this.valid(receipt))throw Error('Attestation is not current');
+    return receipt;
+  }
+}

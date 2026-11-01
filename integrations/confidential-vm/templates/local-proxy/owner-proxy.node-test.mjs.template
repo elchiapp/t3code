@@ -1,0 +1,55 @@
+import {test} from 'node:test';
+import assert from 'node:assert/strict';
+import http from 'node:http';
+import {once} from 'node:events';
+import {createOwnerProxy} from './owner-proxy.mjs';
+
+const owner='owner@example.test';
+async function setup(t,handler,options={}){
+  const backend=http.createServer(handler);backend.listen(0,'127.0.0.1');await once(backend,'listening');
+  const proxy=createOwnerProxy({owner,upstream:`http://127.0.0.1:${backend.address().port}`,...options});proxy.listen(0,'127.0.0.1');await once(proxy,'listening');
+  t.after(()=>{proxy.closeAllConnections();backend.closeAllConnections();proxy.close();backend.close();});
+  return `http://127.0.0.1:${proxy.address().port}`;
+}
+test('missing and different identities cannot reach inference',async t=>{
+  let calls=0;const base=await setup(t,(_,res)=>{calls++;res.end('wrong');});
+  assert.equal((await fetch(base+'/v1/models')).status,401);
+  assert.equal((await fetch(base+'/v1/models',{headers:{'tailscale-user-login':'someone@example.test'}})).status,403);
+  assert.equal(calls,0);
+});
+test('only the inference routes and exact methods are exposed',async t=>{
+  let calls=0;const base=await setup(t,(_,res)=>{calls++;res.end('{}');});
+  for(const path of ['/budget','/api/orchestration/shell','/v1/responses?other=1','/v1/responses/../models']){
+    const r=await fetch(base+path,{method:'POST',headers:{'tailscale-user-login':owner},body:'{}'});assert.equal(r.status,404);
+  }
+  assert.equal(calls,0);
+});
+test('client secrets are stripped and the request body is preserved',async t=>{
+  let observed;const base=await setup(t,async(req,res)=>{let body='';for await(const c of req)body+=c;observed={headers:req.headers,body};res.setHeader('content-type','application/json');res.end('{"ok":true}');});
+  const r=await fetch(base+'/v1/responses',{method:'POST',headers:{'tailscale-user-login':owner,authorization:'Bearer synthetic-client-secret',cookie:'synthetic-cookie','content-type':'application/json'},body:'{"input":"synthetic fixture"}'});
+  assert.equal(r.status,200);assert.deepEqual(await r.json(),{ok:true});assert.equal(observed.body,'{"input":"synthetic fixture"}');
+  for(const key of ['authorization','cookie','tailscale-user-login'])assert.equal(observed.headers[key],undefined);
+});
+test('SSE arrives incrementally with no buffering',async t=>{
+  let release;const gate=new Promise(r=>release=r);const base=await setup(t,async(_,res)=>{res.writeHead(200,{'content-type':'text/event-stream'});res.write('data: first\n\n');await gate;res.end('data: last\n\n');});
+  const r=await fetch(base+'/v1/responses',{method:'POST',headers:{'tailscale-user-login':owner},body:'{}'});const reader=r.body.getReader();
+  try{const first=await reader.read();assert.equal(new TextDecoder().decode(first.value),'data: first\n\n');release();let rest='';for(;;){const c=await reader.read();if(c.done)break;rest+=new TextDecoder().decode(c.value);}assert.equal(rest,'data: last\n\n');}finally{release();}
+});
+test('oversized requests are refused before the gateway sees them',async t=>{
+  let calls=0;const base=await setup(t,(_,res)=>{calls++;res.end('{}');},{maxBytes:2});
+  const r=await fetch(base+'/v1/responses',{method:'POST',headers:{'tailscale-user-login':owner},body:'large'});
+  assert.equal(r.status,413);assert.equal(calls,0);
+});
+test('failed gateway connections fail closed without redirect or retry',async t=>{
+  const closed=http.createServer();closed.listen(0,'127.0.0.1');await once(closed,'listening');const port=closed.address().port;await new Promise(r=>closed.close(r));
+  const proxy=createOwnerProxy({owner,upstream:`http://127.0.0.1:${port}`});proxy.listen(0,'127.0.0.1');await once(proxy,'listening');t.after(()=>{proxy.closeAllConnections();proxy.close();});
+  const r=await fetch(`http://127.0.0.1:${proxy.address().port}/v1/responses`,{method:'POST',headers:{'tailscale-user-login':owner},body:'{}'});
+  assert.equal(r.status,502);assert.deepEqual(await r.json(),{error:{message:'Verified inference gateway unavailable'}});
+});
+test('an upstream redirect is returned without following it',async t=>{
+  let calls=0;const base=await setup(t,(_,res)=>{calls++;res.writeHead(302,{Location:'http://never-follow.invalid/'});res.end();});
+  const r=await fetch(base+'/v1/models',{headers:{'tailscale-user-login':owner},redirect:'manual'});assert.equal(r.status,302);assert.equal(r.headers.get('location'),null);assert.equal(calls,1);
+});
+test('non-local upstream destinations are rejected at startup',()=>{
+  assert.throws(()=>createOwnerProxy({owner,upstream:'https://example.com'}),/loopback/);
+});

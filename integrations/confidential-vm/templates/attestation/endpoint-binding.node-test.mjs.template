@@ -1,0 +1,12 @@
+import {test} from 'node:test';
+import assert from 'node:assert/strict';
+import {commitment,MODEL_ORIGIN,peerKey} from './endpoint-binding.mjs';
+test('binding changes with either nonce or TLS public key',()=>{
+  const a=commitment('a'.repeat(43),'1'.repeat(64));assert.equal(a.length,43);
+  assert.notEqual(a,commitment('b'.repeat(43),'1'.repeat(64)));assert.notEqual(a,commitment('a'.repeat(43),'2'.repeat(64)));
+});
+test('foreign origins and malformed binding values are rejected',async()=>{
+  assert.throws(()=>commitment('a'.repeat(43),'1'.repeat(64),'https://foreign.invalid'));
+  assert.throws(()=>commitment('short','1'.repeat(64),MODEL_ORIGIN));assert.throws(()=>commitment('a'.repeat(43),'not-a-key'));
+  await assert.rejects(peerKey('https://foreign.invalid'));
+});

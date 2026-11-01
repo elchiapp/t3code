@@ -1,0 +1,8 @@
+#!/bin/sh
+set -eu
+export T3CODE_HOME="{{USER_HOME}}/src/codex-workspaces/2026-10-28/t3-cvm/desktop-home"
+export T3CODE_TELEMETRY_ENABLED=false
+export T3CODE_DISABLE_AUTO_UPDATE=true
+export DO_NOT_TRACK=1
+unset ELECTRON_RUN_AS_NODE VITE_DEV_SERVER_URL VITE_HTTP_URL VITE_WS_URL
+exec {{NODE_PATH}} {{T3_SOURCE_ROOT}}/apps/desktop/scripts/start-electron.mjs >>{{USER_HOME}}/src/codex-workspaces/2026-10-28/t3-cvm/desktop-home/desktop.log 2>&1

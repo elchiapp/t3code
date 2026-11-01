@@ -1,3 +1,4 @@
+import { clientAttestation, normalizeAttestationOrigin } from "@t3tools/client-runtime/attestation";
 import { resolveAssetUrl } from "@t3tools/client-runtime/state/assets";
 import {
   clampFileAttachmentUploadBytes,
@@ -360,6 +361,9 @@ export async function prepareTurnAttachments(input: {
 
       requireUploadAccess();
       const result = await runAttachmentUploadCycle({
+        authorizeTransfer: async (url) => {
+          await clientAttestation.authorize(normalizeAttestationOrigin(url));
+        },
         registry: appAtomRegistry,
         createUploadUrl: attachmentEnvironment.createUploadUrl,
         remove: attachmentEnvironment.remove,

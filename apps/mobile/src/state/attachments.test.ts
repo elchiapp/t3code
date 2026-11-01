@@ -80,6 +80,7 @@ describe("attachment mutation grants", () => {
     state.grantedEnvironments.add("secondary");
     const transport = vi.fn();
     const result = await runAttachmentUploadCycle({
+      authorizeTransfer: async () => {},
       registry,
       ...attachmentEnvironment,
       environmentId,

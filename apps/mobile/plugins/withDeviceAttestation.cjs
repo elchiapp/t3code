@@ -66,11 +66,11 @@ module.exports = function withDeviceAttestation(config) {
       const proof = new URL(policy.proofOrigin);
       const cleartext =
         proof.protocol === "http:"
-          ? `<domain-config cleartextTrafficPermitted="true"><domain>${proof.hostname}</domain></domain-config>`
+          ? `<domain-config cleartextTrafficPermitted="true"><domain includeSubdomains="false">${proof.hostname}</domain></domain-config>`
           : "";
       fs.writeFileSync(
         path.join(resources, "xml/t3_attestation_network_security.xml"),
-        `<?xml version="1.0" encoding="utf-8"?><network-security-config><base-config cleartextTrafficPermitted="false"/><domain-config cleartextTrafficPermitted="false"><domain>${policy.hostname}</domain><pin-set><pin digest="SHA-256">${policy.tlsSpkiBase64}</pin></pin-set></domain-config>${cleartext}</network-security-config>`,
+        `<?xml version="1.0" encoding="utf-8"?><network-security-config><base-config cleartextTrafficPermitted="false"/><domain-config cleartextTrafficPermitted="false"><domain includeSubdomains="false">${policy.hostname}</domain><pin-set><pin digest="SHA-256">${policy.tlsSpkiBase64}</pin></pin-set></domain-config>${cleartext}</network-security-config>`,
       );
       return next;
     },

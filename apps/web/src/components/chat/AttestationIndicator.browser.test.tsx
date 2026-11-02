@@ -64,7 +64,6 @@ describe("attestation status in the composer", () => {
   it("unlocks after the subscribed device receipt changes, and closes again on failure", async () => {
     let notify = () => {};
     using snapshot = vi.spyOn(clientAttestation, "get").mockReturnValue(state("checking"));
-    using permission = vi.spyOn(clientAttestation, "canSend").mockReturnValue(false);
     using _subscribe = vi
       .spyOn(clientAttestation, "subscribe")
       .mockImplementation((_, listener) => {
@@ -74,14 +73,12 @@ describe("attestation status in the composer", () => {
     await using screen = await render(<SubscribedComposer />);
     await expect.element(screen.getByRole("button", { name: "Send fixture" })).toBeDisabled();
     snapshot.mockReturnValue(state("verified"));
-    permission.mockReturnValue(true);
     notify();
     await expect
       .element(screen.getByRole("button", { name: "Attestation incomplete" }))
       .toBeVisible();
     await expect.element(screen.getByRole("button", { name: "Send fixture" })).toBeEnabled();
     snapshot.mockReturnValue(state("failed"));
-    permission.mockReturnValue(false);
     notify();
     await expect.element(screen.getByRole("button", { name: "Send fixture" })).toBeDisabled();
   });

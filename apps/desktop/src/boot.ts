@@ -6,6 +6,9 @@ if (require("electron").app.isPackaged) {
   const configuration = fs.existsSync(configurationPath)
     ? JSON.parse(fs.readFileSync(configurationPath, "utf8"))
     : { home: path.join(require("node:os").homedir(), ".t3-attested"), port: 3773 };
-  require("./launchDefaults.cjs").applyAttestedLaunchDefaults(configuration, process.env);
+  require("./attestation/launchDefaults.cjs").applyAttestedLaunchDefaults(
+    configuration,
+    process.env,
+  );
 }
 require("./main.cjs");

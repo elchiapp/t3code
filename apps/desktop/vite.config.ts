@@ -97,7 +97,12 @@ export default defineConfig({
       clean: false,
       deps: {
         neverBundle: (id) =>
-          ["electron", "./main.cjs", "./compileCache.cjs", "./launchDefaults.cjs"].includes(id),
+          [
+            "electron",
+            "./main.cjs",
+            "./compileCache.cjs",
+            "./attestation/launchDefaults.cjs",
+          ].includes(id),
       },
     },
     {

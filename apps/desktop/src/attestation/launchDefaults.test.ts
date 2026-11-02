@@ -9,6 +9,7 @@ it("keeps notification and normal launches on the configured data home without o
   expect(environment.T3CODE_PORT).toBe("3773");
   expect(environment.T3CODE_DISABLE_AUTO_UPDATE).toBe("true");
   expect(environment.T3CODE_TELEMETRY_ENABLED).toBe("false");
+  expect(environment.T3CODE_ATTESTED_CATALOG).toBe("1");
   environment.T3CODE_HOME = "/explicit/home";
   applyAttestedLaunchDefaults(defaults, environment);
   expect(environment.T3CODE_HOME).toBe("/explicit/home");

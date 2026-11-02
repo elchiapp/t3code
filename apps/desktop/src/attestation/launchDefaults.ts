@@ -22,5 +22,6 @@ export function applyAttestedLaunchDefaults(
   environment.T3CODE_DISABLE_AUTO_UPDATE = "true";
   environment.T3CODE_TELEMETRY_ENABLED = "false";
   environment.DO_NOT_TRACK = "1";
+  environment.T3CODE_ATTESTED_CATALOG = "1";
   environment.T3CODE_DESKTOP_APP_USER_MODEL_ID ??= "io.elchiapp.t3attested.desktop";
 }

@@ -1,3 +1,4 @@
+import * as HostProcess from "@t3tools/shared/HostProcess";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, describe, it } from "@effect/vitest";
 import { ConnectionCatalogDocument } from "@t3tools/client-runtime/platform";
@@ -54,6 +55,7 @@ function layerFor(
   encryptionAvailable = true,
   failDecrypt: Ref.Ref<boolean> | null = null,
   fileSystemLayer: Layer.Layer<FileSystem.FileSystem> = NodeServices.layer,
+  attestedCatalog = false,
 ) {
   const layerEnvironment = DesktopEnvironment.layer({
     dirname: "/repo/apps/desktop/src",
@@ -72,6 +74,7 @@ function layerFor(
   );
   const layerSafeStorage = layerSafeStorageFor(encryptionAvailable, failDecrypt);
   const layerDependencies = Layer.mergeAll(
+    Layer.succeed(HostProcess.Environment, attestedCatalog ? { T3CODE_ATTESTED_CATALOG: "1" } : {}),
     layerEnvironment,
     layerSafeStorage,
     NodeServices.layer,
@@ -100,6 +103,31 @@ const withStore = <A, E, R>(
   }).pipe(Effect.provide(NodeServices.layer), Effect.scoped);
 
 describe("DesktopConnectionCatalogStore", () => {
+  it.effect(
+    "keeps a legacy encrypted catalog untouched while the owned app creates its separate store",
+    () =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const base = yield* fs.makeTempDirectoryScoped({ prefix: "t3-owned-catalog-" });
+        const state = path.join(base, "userdata");
+        yield* fs.makeDirectory(state, { recursive: true });
+        const legacy = path.join(state, "connection-catalog.json");
+        const oldContents = JSON.stringify({
+          version: 1,
+          encryptedCatalog: Base64.encode(textEncoder.encode("different-legacy-key")),
+        });
+        yield* fs.writeFileString(legacy, oldContents);
+        yield* Effect.gen(function* () {
+          const store = yield* DesktopConnectionCatalogStore.DesktopConnectionCatalogStore;
+          assert.deepStrictEqual(yield* store.get, Option.none());
+          assert.isTrue(yield* store.set('{"schemaVersion":1,"targets":[]}'));
+          assert.isTrue(yield* fs.exists(path.join(state, "attested-connection-catalog.json")));
+          assert.equal(yield* fs.readFileString(legacy), oldContents);
+        }).pipe(Effect.provide(layerFor(base, true, null, NodeServices.layer, true)));
+      }).pipe(Effect.provide(NodeServices.layer), Effect.scoped),
+  );
+
   it.effect("persists and reads an encrypted connection catalog", () =>
     withStore(
       Effect.gen(function* () {

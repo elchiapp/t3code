@@ -3855,10 +3855,7 @@ const buildDesktopArtifactUnlocked = Effect.fn("buildDesktopArtifactUnlocked")(f
       : undefined;
   const stagePackageJson: StagePackageJson = {
     name: "t3code",
-    // Chromium selects the key store before DesktopAppIdentity sets the display name.
-    productName:
-      (yield* HostProcess.Environment).T3CODE_DESKTOP_STORAGE_PRODUCT_NAME?.trim() ||
-      desktopPackageJson.productName,
+    productName: desktopPackageJson.attestedProductName,
     version: appVersion,
     buildVersion: appVersion,
     t3codeCommitHash: commitHash,

@@ -1,5 +1,5 @@
 import { expect, it } from "vite-plus/test";
-import { applyAttestedLaunchDefaults } from "./launchDefaults";
+import { applyAttestedLaunchDefaults } from "./launchDefaults.ts";
 
 it("keeps notification and normal launches on the configured data home without overriding an explicit home", () => {
   const defaults = { home: "/owned/t3-home", port: 3773 };

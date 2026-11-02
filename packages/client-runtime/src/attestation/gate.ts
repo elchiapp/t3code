@@ -1,6 +1,7 @@
 import type { AttestationRequest, AttestationStatus, DesktopBridge } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 export { withClientAttestationThread } from "./commands.ts";
+export { attestationReport, type AttestationProvider } from "./report.ts";
 
 const REQUIRED_CHECKS = [
   "hardware",
@@ -126,16 +127,19 @@ export class ClientAttestationGate {
     }
     const cached = snapshots.get(instanceId);
     if (cached) return cached;
+    const directCloud = instanceId === "codex" || instanceId === "claudeAgent";
     const inference = status.checks[`inference:${instanceId}`] ?? {
-      state: "not_configured",
-      detail: "Independent inference verification is not configured for this provider.",
+      state: directCloud ? "not_offered" : "not_configured",
+      detail: directCloud
+        ? "This connection does not offer TEE attestation. This is not a verification failure."
+        : "Independent inference verification is not configured for this provider.",
     };
     const uncovered = status.phase === "verified" && inference.state !== "verified";
     const snapshot: AttestationStatus = {
       ...status,
       phase: uncovered ? "unavailable" : status.phase,
       message: uncovered
-        ? "This provider is not covered by the configured inference verifier."
+        ? (inference.detail ?? "Inference verification did not pass for the selected provider.")
         : status.message,
       checks: { ...status.checks, inference },
     };

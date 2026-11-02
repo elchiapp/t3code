@@ -16,6 +16,7 @@ const Policy = Schema.Struct({
   allowedEnvironmentOrigins: Schema.Array(Schema.String),
   tlsSpkiSha256: Schema.optionalKey(Schema.String),
   inferenceProviderIds: Schema.optionalKey(Schema.Array(Schema.String)),
+  inferenceOrigin: Schema.optionalKey(Schema.String),
 });
 export type DeviceAttestationPolicy = typeof Policy.Type;
 const decodeDevicePolicy = Schema.decodeUnknownSync(Policy);
@@ -52,10 +53,24 @@ export function createDesktopVerifier(services: {
     } catch {
       return failed("unavailable", "Device verification is not configured.");
     }
+    const targets = {
+      vmOrigin:
+        policy.allowedEnvironmentOrigins.find((value) => {
+          const url = new URL(value);
+          return url.protocol === "https:" && url.hostname === new URL(policy.modelOrigin).hostname;
+        }) ?? policy.modelOrigin,
+      proxyOrigin: policy.modelOrigin,
+      ...(policy.inferenceOrigin ? { inferenceOrigin: policy.inferenceOrigin } : {}),
+      inferenceProviderIds: policy.inferenceProviderIds ?? ["tinfoil"],
+    };
+    const failure = (phase: "failed" | "unavailable", message: string): AttestationStatus => ({
+      ...failed(phase, message),
+      targets,
+    });
     try {
       const origin = originOf(request.origin);
       if (request.origin !== origin || !policy.allowedEnvironmentOrigins.includes(origin))
-        return failed("unavailable", "Verification is not configured for this environment.");
+        return failure("unavailable", "Verification is not configured for this environment.");
       const verifier = new URL(policy.verifierOrigin);
       // The VM cannot choose a verifier or supply a ready flag for the client.
       if (
@@ -67,9 +82,9 @@ export function createDesktopVerifier(services: {
         verifier.search ||
         verifier.hash
       )
-        return failed("unavailable", "The verifier must run on this device.");
+        return failure("unavailable", "The verifier must run on this device.");
       if (new URL(policy.modelOrigin).protocol !== "https:")
-        return failed("unavailable", "Inference verification requires HTTPS.");
+        return failure("unavailable", "Inference verification requires HTTPS.");
       const read = async (): Promise<typeof LocalProof.Type> => {
         const proof = decodeProof(await services.readStatus(verifier.origin));
         return {
@@ -106,7 +121,7 @@ export function createDesktopVerifier(services: {
         !/^[a-f0-9]{64}$/.test(proof.tlsSpkiSha256 ?? "")
       ) {
         return {
-          ...failed(
+          ...failure(
             "failed",
             proof.checks.inference?.state === "approval_required"
               ? "Tinfoil release approval is required."
@@ -119,19 +134,20 @@ export function createDesktopVerifier(services: {
       if (target.protocol === "https:") {
         if ((await services.peerKey(origin)) !== proof.tlsSpkiSha256)
           return {
-            ...failed("failed", "The environment connection key does not match the verified VM."),
+            ...failure("failed", "The environment connection key does not match the verified VM."),
             checks: {
               ...proof.checks,
               environment_connection: { state: "failed", detail: "TLS key mismatch" },
             },
           };
       } else if (!["127.0.0.1", "localhost", "[::1]"].includes(target.hostname)) {
-        return failed("failed", "A remote environment requires HTTPS.");
+        return failure("failed", "A remote environment requires HTTPS.");
       }
       return {
         origin,
         phase: "verified",
-        message: "VM hardware and Tinfoil verified",
+        message: "Required platform and inference checks passed.",
+        targets,
         verifiedAt: proof.verifiedAt ?? null,
         expiresAt: proof.expiresAt ?? null,
         checks: {
@@ -146,7 +162,7 @@ export function createDesktopVerifier(services: {
         },
       };
     } catch {
-      return failed(
+      return failure(
         "failed",
         "Device verification is unavailable. Sending requires an explicit override.",
       );

@@ -52,7 +52,10 @@ describe("phone-side verification", () => {
       },
       () => 0,
     );
-    expect((await verify({ origin })).phase).toBe("failed");
+    const result = await verify({ origin });
+    expect(result.phase).toBe("failed");
+    expect(result.checks.hardware?.state).toBe("failed");
+    expect(result.checks.inference?.state).toBe("verified");
   });
   it("rejects an unapproved origin before requesting proof", async () => {
     const { operations, calls } = fixture();
@@ -83,7 +86,10 @@ describe("phone-side verification", () => {
       },
       () => 0,
     );
-    expect((await verify({ origin })).phase).toBe("failed");
+    const result = await verify({ origin });
+    expect(result.phase).toBe("failed");
+    expect(result.checks.hardware?.state).toBe("verified");
+    expect(result.checks.inference?.state).toBe("approval_required");
   });
   it("refuses proof which expires while verification runs", async () => {
     const { operations } = fixture();

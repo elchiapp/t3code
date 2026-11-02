@@ -245,6 +245,7 @@ const config: ExpoConfig = {
     fallbackToCacheTimeout: 0,
   },
   ios: {
+    buildNumber: repoEnv.T3CODE_MOBILE_BUILD_NUMBER ?? "1",
     icon: variant.assets.iosIcon,
     supportsTablet: true,
     requireFullScreen: process.env.T3_SHOWCASE_CAPTURE_BUILD === "1",
@@ -286,6 +287,7 @@ const config: ExpoConfig = {
     },
   },
   android: {
+    versionCode: Number(repoEnv.T3CODE_MOBILE_BUILD_NUMBER ?? "1"),
     icon: variant.assets.appIcon,
     package: variant.androidPackage,
     ...(repoEnv.T3CODE_ANDROID_GOOGLE_SERVICES_FILE

@@ -18,5 +18,13 @@ export const AttestationStatus = Schema.Struct({
   verifiedAt: Schema.NullOr(Schema.Number),
   expiresAt: Schema.NullOr(Schema.Number),
   checks: Schema.Record(Schema.String, AttestationCheck),
+  targets: Schema.optionalKey(
+    Schema.Struct({
+      vmOrigin: Schema.String,
+      proxyOrigin: Schema.String,
+      inferenceOrigin: Schema.optionalKey(Schema.String),
+      inferenceProviderIds: Schema.Array(Schema.String),
+    }),
+  ),
 });
 export type AttestationStatus = typeof AttestationStatus.Type;

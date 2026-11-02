@@ -137,6 +137,10 @@ describe("desktop device verifier boundary", () => {
     });
     expect((await verify({ origin: "http://127.0.0.1:3219" })).phase).toBe("verified");
     expect(probes).toBe(0);
+    const local = await verify({ origin: "http://127.0.0.1:3219" });
+    expect(local.targets?.vmOrigin).toBe(origin);
+    expect(local.targets?.proxyOrigin).toBe(policy.modelOrigin);
+    expect(local.targets?.inferenceProviderIds).toEqual(["tinfoil"]);
   });
   it("missing policy never silently disables the gate", async () => {
     const verify = createDesktopVerifier({

@@ -54,16 +54,81 @@ describe("attestation status in the composer", () => {
     await screen.getByRole("button", { name: "Attestation incomplete" }).click();
     await expect.element(page.getByText("VM software", { exact: true })).toBeVisible();
     await expect.element(page.getByText("Exclusive key custody", { exact: true })).toBeVisible();
-    await expect.element(page.getByText("Inference routing", { exact: true })).toBeVisible();
+    await expect.element(page.getByText("Actual request routing", { exact: true })).toBeVisible();
     await expect.element(page.getByText("Not verified", { exact: true }).nth(2)).toBeVisible();
     await expect
       .element(
         page.getByText(
-          "Chat is enabled because the required checks passed. Full VM verification is incomplete.",
+          "Required VM hardware and connection checks passed. Software and key-custody limits are listed below.",
           { exact: true },
         ),
       )
       .toBeVisible();
+  });
+  it("separates local agents from Tinfoil and updates when the inference provider changes", async () => {
+    const local = {
+      ...state("verified"),
+      origin: "http://127.0.0.1:3773",
+      targets: {
+        vmOrigin: "https://vm.example:8446",
+        proxyOrigin: "https://vm.example:8447",
+        inferenceOrigin: "https://inference.example",
+        inferenceProviderIds: ["sealed-provider"],
+      },
+    };
+    await using screen = await render(
+      <AttestationIndicator
+        status={local}
+        canSend
+        onRetry={() => {}}
+        environmentLabel="My MacBook"
+        provider={{ instanceId: "sealed-provider", label: "Tinfoil" }}
+      />,
+    );
+    await screen.getByRole("button", { name: /Tinfoil verified/ }).click();
+    await expect.element(page.getByRole("heading", { name: "Agent environment" })).toBeVisible();
+    await expect.element(page.getByRole("heading", { name: "Inference endpoint" })).toBeVisible();
+    await expect.element(page.getByText("My MacBook", { exact: true })).toBeVisible();
+    await expect
+      .element(page.getByText("https://inference.example", { exact: true }))
+      .toBeVisible();
+    await expect
+      .element(
+        page.getByText(
+          "Local device. No confidential-VM attestation applies to this environment.",
+          { exact: true },
+        ),
+      )
+      .toBeVisible();
+    await expect.element(page.getByText("VM hardware", { exact: true })).not.toBeInTheDocument();
+    await screen.rerender(
+      <AttestationIndicator
+        status={{
+          ...local,
+          phase: "unavailable",
+          checks: { ...local.checks, inference: { state: "not_configured" } },
+        }}
+        canSend={false}
+        onRetry={() => {}}
+        environmentLabel="My MacBook"
+        provider={{ instanceId: "codex", label: "Codex" }}
+      />,
+    );
+    await expect
+      .element(page.getByText("TEE attestation not offered", { exact: true }))
+      .toBeVisible();
+    await expect.element(page.getByText("ChatGPT / OpenAI", { exact: true })).toBeVisible();
+    await expect
+      .element(
+        page.getByText(
+          "This connection does not offer TEE attestation. This is not a verification failure.",
+          { exact: true },
+        ),
+      )
+      .toBeVisible();
+    await expect
+      .element(page.getByText("https://inference.example", { exact: true }))
+      .not.toBeInTheDocument();
   });
   it("unlocks after the subscribed device receipt changes, and closes again on failure", async () => {
     const listeners = new Set<() => void>();

@@ -7,9 +7,9 @@ import {
 import { readLocalApi } from "../localApi";
 
 clientAttestation.setOverrideConfirmation(
-  async ({ origin }) =>
+  async ({ origin, status }) =>
     (await readLocalApi()?.dialogs.confirm(
-      `Some required attestation checks did not pass: ${origin}\n\nSend anyway? Your approval applies only to this conversation until you close the app.`,
+      `${status.message}\n\nEnvironment: ${origin}\n\nSend anyway? Your approval applies only to this conversation until you close the app.`,
     )) ?? false,
 );
 const noEnvironment = unavailableAttestation("", "Connect an environment to verify it.");

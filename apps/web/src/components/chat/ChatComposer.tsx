@@ -10,7 +10,7 @@ import {
   runtimeModeOptions as runtimeModes,
 } from "./runtimeModeConfig";
 import { isLocalEnvironmentDisabled } from "../../localEnvironment";
-import { usePrimaryEnvironmentId } from "../../state/environments";
+import { useEnvironment, usePrimaryEnvironmentId } from "../../state/environments";
 import { useRightPanelStore } from "~/rightPanelStore";
 import { importPastedComposerText, readPastedComposerContext } from "../composerInlineTokenPaste";
 import {
@@ -920,6 +920,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     selectedProviderEntry?.snapshot,
     selectedModel,
   );
+  const attestationEnvironment = useEnvironment(environmentId);
   const attestation = useAttestation(
     environmentId,
     activeThreadId,
@@ -3162,6 +3163,15 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     >
       <AttestationIndicator
         status={attestation.status}
+        environmentLabel={attestationEnvironment?.label}
+        provider={
+          selectedProviderEntry
+            ? {
+                instanceId: selectedProviderEntry.instanceId,
+                label: selectedProviderEntry.displayName,
+              }
+            : undefined
+        }
         canSend={attestation.canSend}
         onRetry={attestation.retry}
         overrideAccepted={attestation.overrideAccepted}

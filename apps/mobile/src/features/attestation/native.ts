@@ -18,6 +18,7 @@ const decodePolicy = Schema.decodeUnknownSync(
     environmentOrigins: Schema.Array(Schema.String),
     proofOrigin: Schema.String,
     modelOrigin: Schema.String,
+    inferenceOrigin: Schema.optionalKey(Schema.String),
     tlsSpkiSha256: Schema.String,
     verifierSha256: Schema.String,
     inferenceProviderIds: Schema.optionalKey(Schema.Array(Schema.String)),

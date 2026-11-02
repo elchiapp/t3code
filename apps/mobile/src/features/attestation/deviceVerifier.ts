@@ -6,6 +6,7 @@ export interface MobileProofPolicy {
   readonly environmentOrigins: ReadonlyArray<string>;
   readonly tlsSpkiSha256: string;
   readonly inferenceProviderIds?: ReadonlyArray<string>;
+  readonly inferenceOrigin?: string;
 }
 
 export interface MobileProofOperations {
@@ -40,6 +41,14 @@ export function createMobileDeviceVerifier(
         verifiedAt: null,
         expiresAt: null,
         checks: {},
+        targets: {
+          vmOrigin: operations.policy.environmentOrigins[0] ?? operations.policy.modelOrigin,
+          proxyOrigin: operations.policy.modelOrigin,
+          ...(operations.policy.inferenceOrigin
+            ? { inferenceOrigin: operations.policy.inferenceOrigin }
+            : {}),
+          inferenceProviderIds: operations.policy.inferenceProviderIds ?? ["tinfoil"],
+        },
       };
     };
     const policy = operations.policy;
@@ -83,80 +92,111 @@ export function createMobileDeviceVerifier(
     const started = now();
     const startedMonotonic = monotonic();
     pending = (async () => {
-      let stage = "Creating the proof challenge";
       try {
-        const prepared = await operations.prepare();
-        if (
-          !Number.isSafeInteger(prepared.expiresAt) ||
-          prepared.expiresAt > now() + 60_000 ||
-          prepared.expiresAt <= now()
-        )
-          return failure("The verification challenge is not fresh.");
-        stage = "Collecting VM hardware evidence";
-        const evidence = await operations.collect({
-          version: 1,
-          modelOrigin: policy.modelOrigin,
-          tlsSpkiSha256: policy.tlsSpkiSha256,
-          nonce: prepared.nonce,
-          challenge: prepared.challenge,
-        });
-        stage = "Checking VM hardware evidence";
-        await operations.verifyHardware(prepared.challenge, evidence);
-        stage = "Checking Tinfoil evidence";
-        const inference = await operations.verifyInference();
-        const coveredInference = Object.fromEntries(
-          (policy.inferenceProviderIds ?? ["tinfoil"]).map((id) => [`inference:${id}`, inference]),
-        );
-        if (inference.state !== "verified")
+        const [platform, inferenceResult] = await Promise.allSettled([
+          (async () => {
+            const prepared = await operations.prepare();
+            if (
+              !Number.isSafeInteger(prepared.expiresAt) ||
+              prepared.expiresAt > now() + 60_000 ||
+              prepared.expiresAt <= now()
+            )
+              throw new Error("The verification challenge is not fresh.");
+            const evidence = await operations.collect({
+              version: 1,
+              modelOrigin: policy.modelOrigin,
+              tlsSpkiSha256: policy.tlsSpkiSha256,
+              nonce: prepared.nonce,
+              challenge: prepared.challenge,
+            });
+            await operations.verifyHardware(prepared.challenge, evidence);
+            if (prepared.expiresAt <= now() || !(await operations.transportProtected()))
+              throw new Error("VM verification expired or connection protection changed.");
+            return prepared.expiresAt;
+          })(),
+          operations.verifyInference(),
+        ]);
+        const detail = (cause: unknown) =>
+          cause instanceof Error ? cause.message.slice(0, 200) : "Verification failed.";
+        const inference =
+          inferenceResult.status === "fulfilled"
+            ? inferenceResult.value
+            : {
+                state: "failed",
+                detail: detail(inferenceResult.reason),
+              };
+        if (!(await operations.transportProtected()))
+          return failure("Native connection protection changed. Sending requires confirmation.");
+        const freshPlatform = platform.status === "fulfilled" && platform.value > now();
+        const checks: AttestationStatus["checks"] = {
+          hardware: freshPlatform
+            ? {
+                state: "verified",
+                detail:
+                  "This device verified the fresh VM hardware signature and approved firmware policy.",
+              }
+            : {
+                state: "failed",
+                detail:
+                  platform.status === "rejected" ? detail(platform.reason) : "VM evidence expired.",
+              },
+          tls_key_commitment: {
+            state: freshPlatform ? "verified" : "unavailable",
+            detail: "The VM hardware proof must commit to the key pinned by this app.",
+          },
+          environment_connection: {
+            state: freshPlatform ? "verified" : "unavailable",
+            detail: "Native HTTPS and WebSocket connections enforce the approved VM key.",
+          },
+          inference,
+          ...Object.fromEntries(
+            (policy.inferenceProviderIds ?? ["tinfoil"]).map((id) => [
+              `inference:${id}`,
+              inference,
+            ]),
+          ),
+          proxy_workload: {
+            state: "not_configured",
+            detail: "The VM software is not independently measured.",
+          },
+          key_custody: {
+            state: "not_configured",
+            detail: "Exclusive private-key custody is not proved.",
+          },
+          inference_route: {
+            state: "not_configured",
+            detail: "Actual inference routing is not independently proved.",
+          },
+        };
+        if (!freshPlatform || inference.state !== "verified")
           return {
-            ...failure(inference.detail),
-            checks: { inference, ...coveredInference },
+            ...failure(
+              "Required platform or inference checks did not pass. Sending requires confirmation.",
+            ),
+            checks,
           };
-        if (prepared.expiresAt <= now() || !(await operations.transportProtected()))
-          return failure("Verification expired or connection protection changed.");
         accepted = {
           origin,
           phase: "verified",
           message:
-            "Required VM hardware and Tinfoil checks passed. Full VM verification is incomplete.",
+            "Required platform and inference checks passed. Full VM verification is incomplete.",
           verifiedAt: now(),
-          expiresAt: prepared.expiresAt,
-          checks: {
-            hardware: {
-              state: "verified",
-              detail:
-                "This phone checked the fresh hardware signature and approved firmware policy.",
-            },
-            tls_key_commitment: {
-              state: "verified",
-              detail: "The hardware proof commits to the VM connection key pinned by this app.",
-            },
-            environment_connection: {
-              state: "verified",
-              detail: "Native HTTPS and WebSocket connections enforce the same VM key.",
-            },
-            inference,
-            ...coveredInference,
-            proxy_workload: {
-              state: "not_configured",
-              detail: "The VM software is not independently measured.",
-            },
-            key_custody: {
-              state: "not_configured",
-              detail: "Exclusive private-key custody is not proved.",
-            },
-            inference_route: {
-              state: "not_configured",
-              detail: "The VM's actual inference routing is not independently proved.",
-            },
+          expiresAt: platform.value,
+          targets: {
+            vmOrigin: origin,
+            proxyOrigin: policy.modelOrigin,
+            ...(policy.inferenceOrigin ? { inferenceOrigin: policy.inferenceOrigin } : {}),
+            inferenceProviderIds: policy.inferenceProviderIds ?? ["tinfoil"],
           },
+          checks,
         };
-        acceptedDeadline = startedMonotonic + Math.max(0, prepared.expiresAt - started);
+        acceptedDeadline = startedMonotonic + Math.max(0, platform.value - started);
         return accepted;
       } catch (cause) {
         accepted = undefined;
-        const detail = cause instanceof Error ? cause.message.slice(0, 200) : "Verification failed";
-        return failure(`${stage}: ${detail}. Sending requires confirmation.`);
+        return failure(
+          cause instanceof Error ? cause.message.slice(0, 200) : "Device verification failed.",
+        );
       } finally {
         pending = undefined;
       }

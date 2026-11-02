@@ -1,3 +1,4 @@
+import { resolveProviderInstanceDisplayName } from "@t3tools/client-runtime/state/provider-instance-display";
 import { useAttestation } from "../attestation/useAttestation";
 import { AttestationIndicator } from "../attestation/AttestationIndicator";
 import { useSidebarWorkspaceTabs } from "../workspace/useSystemWorkspaceTabBar";
@@ -846,6 +847,13 @@ export const ThreadComposer = function ThreadComposer(props: ThreadComposerProps
         {props.draftControls}
         <AttestationIndicator
           status={attestation.status}
+          environmentLabel={props.environmentLabel ?? undefined}
+          provider={{
+            instanceId: currentModelSelection.instanceId,
+            label: selectedProviderStatus
+              ? resolveProviderInstanceDisplayName(selectedProviderStatus)
+              : currentModelSelection.instanceId,
+          }}
           canSend={attestation.canSend}
           retry={attestation.retry}
           overrideAccepted={attestation.overrideAccepted}

@@ -78,6 +78,7 @@ if (proof.protocol === "http:") {
 }
 if (!/^[a-f0-9]{96}$/.test(configuration.proofPolicy?.hardware?.snp?.measurementHex ?? ""))
   throw Error("An approved VM launch measurement is required");
+configuration.inferenceOrigin = configuration.proofPolicy.tinfoil.enclaveOrigin;
 configuration.hostname = model.hostname;
 configuration.tlsSpkiBase64 = Buffer.from(configuration.tlsSpkiSha256, "hex").toString("base64");
 configuration.ownerApprovals ??= [];

@@ -8,6 +8,7 @@ module.exports = function withDeviceAttestation(config) {
   const nativePolicy = Object.fromEntries(
     [
       "modelOrigin",
+      "inferenceOrigin",
       "proofOrigin",
       "environmentOrigins",
       "tlsSpkiSha256",

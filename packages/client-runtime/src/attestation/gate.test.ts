@@ -61,6 +61,9 @@ describe("client attestation gate", () => {
     expect(gate.canSend(origin, "public-provider")).toBe(false);
     expect(gate.get(origin, "public-provider").checks.inference?.state).toBe("not_configured");
     expect(gate.get(origin, "public-provider")).toBe(gate.get(origin, "public-provider"));
+    expect(gate.get(origin, "codex").checks.inference?.state).toBe("not_offered");
+    expect(gate.get(origin, "codex").message).toContain("not a verification failure");
+    expect(gate.canSend(origin, "codex")).toBe(false);
   });
 
   it("an accepted override does not wait for an unavailable background verifier", async () => {

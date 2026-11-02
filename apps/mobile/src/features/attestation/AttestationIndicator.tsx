@@ -1,46 +1,9 @@
 import { useState } from "react";
 import { Pressable, ScrollView, View } from "react-native";
 import type { AttestationStatus } from "@t3tools/contracts";
+import { attestationReport, type AttestationProvider } from "@t3tools/client-runtime/attestation";
 import { AppText as Text } from "../../components/ui/AppText";
 import { Sheet } from "../../components/ui/Sheet";
-
-const checks = [
-  [
-    "environment_connection",
-    "VM connection",
-    "Checks the actual encrypted connection to your paired VM.",
-  ],
-  [
-    "hardware",
-    "VM hardware",
-    "Checks fresh hardware evidence and the approved VM launch and firmware policy.",
-  ],
-  [
-    "tls_key_commitment",
-    "Connection key",
-    "Checks that the hardware proof includes the key enforced by this app's connections.",
-  ],
-  [
-    "inference",
-    "Inference service",
-    "This phone independently checks the configured inference service's hardware evidence, encryption keys and approved release.",
-  ],
-  [
-    "proxy_workload",
-    "VM software",
-    "The programs running inside the VM are not independently measured.",
-  ],
-  [
-    "key_custody",
-    "Exclusive key custody",
-    "There is no accepted proof that private keys cannot be copied.",
-  ],
-  [
-    "inference_route",
-    "Inference routing",
-    "There is no independent proof of where the VM forwards each inference request.",
-  ],
-] as const;
 
 export function AttestationIndicator({
   status,
@@ -48,65 +11,50 @@ export function AttestationIndicator({
   retry,
   overrideAccepted = false,
   revokeOverride,
+  environmentLabel,
+  provider,
 }: {
   status: AttestationStatus;
   canSend: boolean;
   retry: () => void;
   overrideAccepted?: boolean;
   revokeOverride?: () => void;
+  environmentLabel?: string | undefined;
+  provider?: AttestationProvider | undefined;
 }) {
   const [showDetails, setShowDetails] = useState(false);
-  const complete = canSend && checks.every(([key]) => status.checks[key]?.state === "verified");
-  const label = canSend
-    ? complete
-      ? "Attestation verified"
-      : "Attestation incomplete"
-    : status.phase === "checking"
-      ? "Verifying connection"
-      : status.phase === "failed"
-        ? "Verification failed"
-        : status.phase === "expired"
-          ? "Verification expired"
-          : "Verification unavailable";
+  const report = attestationReport(status, canSend, environmentLabel, provider);
   return (
     <>
       <Pressable
         accessibilityRole="button"
-        accessibilityLabel={label}
+        accessibilityLabel={report.label}
         onPress={() => setShowDetails(true)}
         className="px-1 pb-1"
       >
         <Text
           accessibilityLiveRegion="polite"
           className={
-            complete
+            report.allVerified
               ? "text-xs text-adaptive-emerald-700-300"
-              : canSend || status.phase === "checking"
-                ? "text-xs text-warning-foreground"
-                : "text-xs text-danger-foreground"
+              : report.neutral
+                ? "text-xs text-foreground-muted"
+                : canSend || report.pending
+                  ? "text-xs text-warning-foreground"
+                  : "text-xs text-danger-foreground"
           }
         >
-          ● {label}
+          ● {report.label}
         </Text>
       </Pressable>
       {showDetails && (
-        <Sheet title="Connection verification" onClose={() => setShowDetails(false)}>
+        <Sheet title="Attestation" onClose={() => setShowDetails(false)}>
           <ScrollView
             className="flex-1"
             nestedScrollEnabled
             contentInsetAdjustmentBehavior="automatic"
-            contentContainerStyle={{ padding: 20, paddingBottom: 40, gap: 20 }}
+            contentContainerStyle={{ padding: 20, paddingBottom: 40, gap: 24 }}
           >
-            <View className="gap-2">
-              <Text accessibilityRole="header" className="text-lg font-semibold">
-                {label}
-              </Text>
-              <Text className="text-sm text-foreground-muted">
-                {canSend
-                  ? "Required checks passed. Items marked not verified still depend on trust."
-                  : status.message}
-              </Text>
-            </View>
             {overrideAccepted && (
               <View className="gap-2">
                 <Text className="text-sm text-foreground-muted">
@@ -121,24 +69,40 @@ export function AttestationIndicator({
                 </Pressable>
               </View>
             )}
-            {checks.map(([key, title, explanation]) => (
-              <View key={key} className="gap-1">
-                <Text className="text-base font-semibold">
-                  {title}: {status.checks[key]?.state === "verified" ? "Verified" : "Not verified"}
+            {report.sections.map((section) => (
+              <View key={section.title} className="gap-3 border-b border-border pb-4">
+                <Text accessibilityRole="header" className="text-lg font-semibold">
+                  {section.title}
                 </Text>
-                <Text className="text-sm text-foreground-muted">{explanation}</Text>
-                {key === "inference" && status.checks[key]?.detail && (
-                  <Text className="text-sm text-foreground-muted">{status.checks[key].detail}</Text>
+                <Text className="text-base font-semibold">{section.name}</Text>
+                {section.origin && section.origin !== section.name && (
+                  <Text className="text-sm text-foreground-muted">{section.origin}</Text>
                 )}
+                <Text className="text-sm">{section.summary}</Text>
+                {section.route && (
+                  <Text className="text-sm text-foreground-muted">{section.route}</Text>
+                )}
+                {section.rows.map((row) => (
+                  <View key={row.title} className="gap-1">
+                    <Text className="text-sm font-semibold">
+                      {row.title}: {row.result}
+                    </Text>
+                    <Text className="text-sm text-foreground-muted">{row.explanation}</Text>
+                    {row.detail && (
+                      <Text className="text-sm text-foreground-muted">{row.detail}</Text>
+                    )}
+                  </View>
+                ))}
               </View>
             ))}
             <Text className="text-sm text-foreground-muted">
-              These checks run on this phone. No laptop is required. Other inference providers do
-              not become confidential.
+              Checks run on this device. Verifying the inference endpoint does not attest the agent
+              environment or prove each request's route.
             </Text>
             <Pressable
               accessibilityRole="button"
               onPress={retry}
+              disabled={report.pending}
               className="rounded-xl bg-card-alt px-4 py-3"
             >
               <Text className="text-center font-semibold">Check again</Text>

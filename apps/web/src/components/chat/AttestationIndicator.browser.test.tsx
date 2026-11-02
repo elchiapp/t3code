@@ -7,10 +7,14 @@ import { useOriginAttestation } from "../../attestation/useOriginAttestation";
 import { clientAttestation } from "@t3tools/client-runtime/attestation";
 
 function SubscribedComposer() {
-  const attestation = useOriginAttestation("https://vm.example:8446");
+  const attestation = useOriginAttestation("https://vm.example:8446", "fixture-thread");
   return (
     <>
-      <AttestationIndicator {...attestation} onRetry={attestation.retry} />
+      <AttestationIndicator
+        {...attestation}
+        onRetry={attestation.retry}
+        onRevokeOverride={attestation.revokeOverride}
+      />
       <button disabled={!attestation.canSend}>Send fixture</button>
     </>
   );
@@ -62,14 +66,24 @@ describe("attestation status in the composer", () => {
       .toBeVisible();
   });
   it("unlocks after the subscribed device receipt changes, and closes again on failure", async () => {
-    let notify = () => {};
+    const listeners = new Set<() => void>();
+    const notify = () => listeners.forEach((listener) => listener());
+    let overridden = false;
+    using _consent = vi
+      .spyOn(clientAttestation, "hasOverride")
+      .mockImplementation(() => overridden);
     using snapshot = vi.spyOn(clientAttestation, "get").mockReturnValue(state("checking"));
     using _subscribe = vi
       .spyOn(clientAttestation, "subscribe")
       .mockImplementation((_, listener) => {
-        notify = listener;
-        return () => {};
+        listeners.add(listener);
+        return () => listeners.delete(listener);
       });
+    using _revoke = vi.spyOn(clientAttestation, "revokeOverride").mockImplementation(() => {
+      overridden = false;
+      snapshot.mockReturnValue(state("failed"));
+      notify();
+    });
     await using screen = await render(<SubscribedComposer />);
     await expect.element(screen.getByRole("button", { name: "Send fixture" })).toBeDisabled();
     snapshot.mockReturnValue(state("verified"));
@@ -81,6 +95,27 @@ describe("attestation status in the composer", () => {
     snapshot.mockReturnValue(state("failed"));
     notify();
     await expect.element(screen.getByRole("button", { name: "Send fixture" })).toBeDisabled();
+    overridden = true;
+    snapshot.mockReturnValue(state("failed"));
+    notify();
+    await screen.getByRole("button", { name: "Verification failed" }).click();
+    await expect
+      .element(
+        page.getByText(
+          "Unverified sending is allowed for this conversation until you close the app.",
+          { exact: true },
+        ),
+      )
+      .toBeVisible();
+    await page.getByRole("button", { name: "Require verification", exact: true }).click();
+    await expect
+      .element(
+        page.getByText(
+          "Unverified sending is allowed for this conversation until you close the app.",
+          { exact: true },
+        ),
+      )
+      .not.toBeInTheDocument();
   });
   it("shows checking, failure and success without replacing the composer", async () => {
     const retry = vi.fn();

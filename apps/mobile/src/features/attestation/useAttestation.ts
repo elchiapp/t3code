@@ -34,11 +34,15 @@ export function useAttestation(
     [origin, instanceId],
   );
   const status = useSyncExternalStore(subscribe, snapshot, () => noEnvironment);
+  const overrideAccepted = useSyncExternalStore(
+    subscribe,
+    () => origin !== "" && threadId !== null && clientAttestation.hasOverride(origin, threadId),
+    () => false,
+  );
   return {
     status,
     canSend: origin !== "" && status.phase === "verified",
-    overrideAccepted:
-      origin !== "" && threadId !== null && clientAttestation.hasOverride(origin, threadId),
+    overrideAccepted,
     authorize: async () =>
       origin !== "" &&
       (await clientAttestation.authorizeWithOverride(origin, threadId, instanceId)).allowed,

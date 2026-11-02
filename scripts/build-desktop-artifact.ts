@@ -954,6 +954,7 @@ interface ResolvedBuildOptions {
 
 interface StagePackageJson {
   readonly name: string;
+  readonly productName: string;
   readonly version: string;
   readonly buildVersion: string;
   readonly t3codeCommitHash: string;
@@ -2751,7 +2752,7 @@ export function resolvePackageManagerUserAgent(packageManager: string): string {
 export function resolveDesktopProductName(version: string): string {
   return resolveDesktopUpdateChannel(version) === "nightly"
     ? "T3 Code (Nightly)"
-    : (desktopPackageJson.productName ?? "T3 Code");
+    : desktopPackageJson.attestedProductName;
 }
 
 export const createBuildConfig = Effect.fn("createBuildConfig")(function* (
@@ -3853,6 +3854,8 @@ const buildDesktopArtifactUnlocked = Effect.fn("buildDesktopArtifactUnlocked")(f
       : undefined;
   const stagePackageJson: StagePackageJson = {
     name: "t3code",
+    // Chromium selects the key store before DesktopAppIdentity sets the display name.
+    productName: desktopPackageJson.productName,
     version: appVersion,
     buildVersion: appVersion,
     t3codeCommitHash: commitHash,

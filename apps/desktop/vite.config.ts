@@ -87,16 +87,17 @@ export default defineConfig({
       },
     },
     {
-      // boot.cjs requires the other two at runtime, so all three stay separate files.
+      // The boot entry loads these modules before the main runtime.
       format: "cjs",
       outDir: "dist-electron",
       dts: false,
       sourcemap: true,
       outExtensions: () => ({ js: ".cjs" }),
-      entry: ["src/boot.ts", "src/compileCache.ts"],
+      entry: ["src/boot.ts", "src/compileCache.ts", "src/attestation/launchDefaults.ts"],
       clean: false,
       deps: {
-        neverBundle: (id) => id === "./main.cjs" || id === "./compileCache.cjs",
+        neverBundle: (id) =>
+          ["electron", "./main.cjs", "./compileCache.cjs", "./launchDefaults.cjs"].includes(id),
       },
     },
     {

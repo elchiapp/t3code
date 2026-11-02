@@ -10,6 +10,8 @@ Object.assign(process.env, repoEnv);
 
 const APP_VARIANT = resolveAppVariant(repoEnv.APP_VARIANT);
 const isIosPersonalTeamBuild = repoEnv.T3CODE_IOS_PERSONAL_TEAM === "1";
+const iosShareExtensionEnabled =
+  !isIosPersonalTeamBuild && repoEnv.T3CODE_IOS_SHARE_EXTENSION_ENABLED === "1";
 const runtimeVersionPolicy =
   process.env.MOBILE_VERSION_POLICY ??
   (APP_VARIANT === "development" ? "appVersion" : "fingerprint");
@@ -202,7 +204,7 @@ const sharingPlugin: NonNullable<ExpoConfig["plugins"]>[number] = [
   {
     ios: {
       // Personal Teams cannot sign App Groups or extension targets; keep local builds usable.
-      enabled: !isIosPersonalTeamBuild,
+      enabled: iosShareExtensionEnabled,
       extensionBundleIdentifier: `${iosBundleIdentifier}.sharing`,
       appGroupId: `group.${iosBundleIdentifier}`,
       activationRule: {
@@ -334,7 +336,7 @@ const config: ExpoConfig = {
     ],
     "expo-secure-store",
     "expo-sqlite",
-    ...(isIosPersonalTeamBuild
+    ...(!iosShareExtensionEnabled
       ? [sharingPlugin]
       : ["./plugins/withShareExtensionDisplayName.cjs", sharingPlugin]),
     [
@@ -438,6 +440,7 @@ const config: ExpoConfig = {
   extra: {
     appVariant: APP_VARIANT,
     iosPersonalTeamBuild: isIosPersonalTeamBuild,
+    iosShareExtensionEnabled,
     relay: {
       url: repoEnv.T3CODE_RELAY_URL ?? null,
     },

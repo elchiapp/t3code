@@ -138,3 +138,9 @@ It remains enabled. The final required checks passed, including all 119 selected
 tests. The native subscription regression has a separate failing-before test.
 Automatic upstream desktop updates are disabled by default in this fork so an
 unmodified upstream client cannot silently replace the gate.
+
+## Desktop installation
+
+Use the normal desktop artifact builder and install the complete packaged app. A development Electron runtime is not an installed app: macOS can start it without the source entry argument when opening a notification or URL, displaying Electron's default page. The fork uses its own desktop bundle identifier and product name.
+
+The packaged bootstrap reads an optional `t3-attested-launch.json` from the app resources, containing only an absolute `home` path and numeric `port`. Installation can retain an existing T3 home this way. Without this file it uses `~/.t3-attested` and port3773. Explicit environment values still take precedence. No API keys belong in this file. Upstream auto-updates and telemetry stay disabled.

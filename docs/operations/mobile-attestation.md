@@ -96,3 +96,5 @@ refresh or a conversation override never approves a release. The inference
 service can still refuse requests under its own release policy. App signing and distribution,
 physical iPhone testing, Android native acceptance and independent production
 security review are separate release gates.
+
+The iOS incoming share extension is opt-in (`T3CODE_IOS_SHARE_EXTENSION_ENABLED=1`). The default build keeps attachment selection inside T3 and does not include that extension. Enabling incoming sharing requires the corresponding approved Apple App Group assignment and a newly signed native build. Android incoming sharing is unchanged.

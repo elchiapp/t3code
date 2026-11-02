@@ -21,6 +21,29 @@ interface WorkerReply {
   readonly error?: string;
 }
 
+async function collectProof(proofOrigin: string, input: unknown) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 25000);
+  try {
+    const result = await fetch(proofOrigin + "/proof", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(input),
+      redirect: "error",
+      signal: controller.signal,
+    });
+    if (!result.ok) throw new Error("VM hardware proof is unavailable");
+    const length = Number(result.headers.get("content-length"));
+    if (Number.isFinite(length) && length > 524288)
+      throw new Error("Evidence exceeds the size limit");
+    const value = await result.text();
+    if (value.length > 524288) throw new Error("Evidence exceeds the size limit");
+    return JSON.parse(value);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 export function VerifierHost() {
   const webview = useRef<WebView<object>>(null);
   const [document, setDocument] = useState<{ html: string; id: number } | null>(null);
@@ -97,28 +120,7 @@ export function VerifierHost() {
             challenge: Readonly<Record<string, unknown>>;
             expiresAt: number;
           },
-        collect: async (input) => {
-          const controller = new AbortController();
-          const timer = setTimeout(() => controller.abort(), 25000);
-          try {
-            const result = await fetch(policy.proofOrigin + "/proof", {
-              method: "POST",
-              headers: { "content-type": "application/json" },
-              body: JSON.stringify(input),
-              redirect: "error",
-              signal: controller.signal,
-            });
-            if (!result.ok) throw new Error("VM hardware proof is unavailable");
-            const length = Number(result.headers.get("content-length"));
-            if (Number.isFinite(length) && length > 524288)
-              throw new Error("Evidence exceeds the size limit");
-            const value = await result.text();
-            if (value.length > 524288) throw new Error("Evidence exceeds the size limit");
-            return JSON.parse(value);
-          } finally {
-            clearTimeout(timer);
-          }
-        },
+        collect: (input) => collectProof(policy.proofOrigin, input),
         verifyHardware: async (challenge, evidence) => {
           await call("hardware", { challenge, evidence });
         },

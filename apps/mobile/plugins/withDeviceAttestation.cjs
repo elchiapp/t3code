@@ -33,6 +33,11 @@ module.exports = function withDeviceAttestation(config) {
     ats.NSAllowsArbitraryLoads = false;
     ats.NSAllowsArbitraryLoadsInWebContent = false;
     ats.NSAllowsLocalNetworking = true;
+    // iOS 17+ requires an explicit IP-range exception for Tailnet HTTP servers.
+    ats.NSExceptionDomains = {
+      ...ats.NSExceptionDomains,
+      "100.64.0.0/10": { NSExceptionAllowsInsecureHTTPLoads: true },
+    };
     if (publicProof.protocol === "http:") {
       ats.NSExceptionDomains = {
         ...ats.NSExceptionDomains,

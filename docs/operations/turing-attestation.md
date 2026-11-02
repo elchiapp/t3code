@@ -77,7 +77,9 @@ Keep the standalone runtime home separate from each existing account/provider
 home. The installer uses the runtime home as `CODEX_HOME`; T3's **CODEX_HOME path**
 continues to point at the existing profile. Preserve that profile, its credentials
 and inference URL. Point **Binary path** at the genuine standalone Codex entrypoint.
-In that provider's non-secret environment settings:
+Set these non-secret variables in the T3 server's startup environment. Upstream
+v0.1.6 does not forward provider-instance environment overrides to maintenance
+commands, so setting them only in the provider editor is insufficient:
 
 - Set `CODEX_INSTALL_DIR` to the standalone installation's visible `bin` directory.
 - Set `CODEX_NON_INTERACTIVE=1` so installation does not prompt to launch Codex or

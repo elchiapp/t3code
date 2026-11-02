@@ -23,15 +23,19 @@ separate and retain normal website access.
 
 The verified checks are VM hardware/firmware, a connection-key commitment and
 the exact approved Tinfoil release. The mutable VM software and administrator
-remain trusted. This does not establish exclusive key custody or prove inference
-routing through a compromised VM. Other model providers do not become confidential.
+remain trusted. A compromised guest and physical side-channel attacks are outside
+this deployment's current trust model. Separate proof of exclusive key custody,
+measured application code and actual request routing is not implemented. Other
+model providers do not become confidential. Disk encryption and storage-key release
+have their own deployment acceptance; the status does not attest them.
 
-When the required checks pass but these protections remain unverified, the
-composer shows an amber "Attestation incomplete" indicator. Its details include
-the missing VM software, exclusive key custody and inference-routing proofs.
-Chat is enabled under the current hardware-and-inference policy; that permission
-does not mean full VM verification passed. Missing optional checks also remain
-incomplete rather than silently displaying a full pass.
+Details separate the agent environment from the selected inference endpoint and
+name their configured origins. A local device is not presented as the VM used for
+its inference proxy. Individual checks show green passes, yellow checking or
+trusted assumptions, and red failures. Trusted assumptions are not failed checks
+or verified guarantees. Chat permission follows the required hardware, connection
+and selected-inference policy. Direct ChatGPT and Claude connections explicitly
+report that TEE attestation is not offered; an unknown provider is not configured.
 
 A client without a trusted verifier reports that verification is unavailable.
 It requires explicit conversation consent rather than trusting a server assertion.
@@ -60,6 +64,39 @@ Keep service recipes under `integrations/confidential-vm` separate from changes
 to upstream T3 code. Check the fork diff against each new stable upstream tag;
 keep compatibility fixes independent so they can be removed when upstream fixes
 them. Native clients must retain their controlled signing/update channel.
+
+## Codex updates from T3
+
+Use an official OpenAI standalone Codex installation owned by the T3 server user
+to enable the normal provider **Update now** action. A custom launcher is treated
+as externally managed. This deployment accepts official stable Codex release
+packages and trusts OpenAI's release pipeline; T3 Attested and the owned verifier
+continue to use controlled source builds.
+
+Keep the standalone runtime home separate from each existing account/provider
+home. The installer uses the runtime home as `CODEX_HOME`; T3's **CODEX_HOME path**
+continues to point at the existing profile. Preserve that profile, its credentials
+and inference URL. Point **Binary path** at the genuine standalone Codex entrypoint.
+In that provider's non-secret environment settings:
+
+- Set `CODEX_INSTALL_DIR` to the standalone installation's visible `bin` directory.
+- Set `CODEX_NON_INTERACTIVE=1` so installation does not prompt to launch Codex or
+  remove another installation.
+- Prepend that directory to the existing `PATH`. Retain the existing tools and,
+  on hardened Linux hosts, the already approved system `bwrap` path.
+
+Retain catalogue generation when retiring a launcher that refreshes Tinfoil model
+metadata. Run the existing catalogue script through a user-owned scheduled job;
+it fetches model metadata, not conversation data. A local job should stop making
+requests when its T3 server is not running. On Linux use an existing user service
+manager and keep `NoNewPrivileges=true`; check that the timer starts after reboot.
+Do not disable the T3 service's privilege restrictions to install an updater.
+
+Then use **Settings → Providers**, select the environment and provider, open its
+update indicator and choose **Update now**. Check the resulting version, model
+inventory and a harmless sandbox command before accepting the change. Keep the
+previous executable path and release for rollback. Updating Codex does not approve
+a new Tinfoil enclave release or change the client attestation policy.
 
 ## Set up a device
 
@@ -130,12 +167,11 @@ its license and dependency notices remain in the submodule. The optional Codex
 instruction template retains its Apache-2.0 source license under
 `integrations/confidential-vm/LICENSES`. No vendor executable is committed.
 
-## Current validation note
+## Validation limits
 
-During validation, the long guest-timeline auto-follow browser check intermittently
-failed with the same bootstrap convergence error on the unchanged upstream page.
-It remains enabled. The final required checks passed, including all 119 selected
-tests. The native subscription regression has a separate failing-before test.
+The long guest-timeline auto-follow browser check can fail with a bootstrap
+convergence error also reproduced on unchanged upstream code. It remains enabled.
+Passing client checks does not replace live hardware verification on each device.
 Automatic upstream desktop updates are disabled by default in this fork so an
 unmodified upstream client cannot silently replace the gate.
 

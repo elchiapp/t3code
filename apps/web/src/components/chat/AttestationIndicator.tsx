@@ -80,7 +80,21 @@ export function AttestationIndicator({
                   {section.rows.map((row) => (
                     <div key={row.title} className="grid grid-cols-[1fr_auto] gap-x-4 gap-y-1">
                       <dt>{row.title}</dt>
-                      <dd className="font-medium">{row.result}</dd>
+                      <dd className="inline-flex items-center gap-1.5 font-medium">
+                        <span
+                          aria-hidden="true"
+                          data-attestation-tone={row.tone}
+                          className={cn(
+                            "size-1.5 shrink-0 rounded-full",
+                            row.tone === "green"
+                              ? "bg-success"
+                              : row.tone === "red"
+                                ? "bg-error"
+                                : "bg-warning",
+                          )}
+                        />
+                        {row.result}
+                      </dd>
                       <dd className="col-span-2 text-muted-foreground">{row.explanation}</dd>
                       {row.detail && (
                         <dd className="col-span-2">
@@ -98,8 +112,8 @@ export function AttestationIndicator({
               </section>
             ))}
             <p>
-              Checks run on this device. Verifying the inference endpoint does not attest the agent
-              environment or prove each request's route.
+              Checks run on this device. The VM and its software are trusted. Yellow assumptions are
+              outside the current proof scope; they are not failed checks.
             </p>
             <Button size="sm" variant="outline" onClick={onRetry} disabled={report.pending}>
               Check again

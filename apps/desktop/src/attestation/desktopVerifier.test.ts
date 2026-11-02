@@ -104,7 +104,9 @@ describe("desktop device verifier boundary", () => {
       ...services(),
       readStatus: async () => ({ ...proof(), modelOrigin: "https://other.example" }),
     });
-    expect((await verify({ origin })).phase).toBe("failed");
+    const wrongTarget = await verify({ origin });
+    expect(wrongTarget.phase).toBe("failed");
+    expect(wrongTarget.checks.inference?.state).toBe("failed");
   });
   it("rejects the wrong environment TLS key", async () => {
     const verify = createDesktopVerifier({ ...services(), peerKey: async () => "b".repeat(64) });
@@ -115,7 +117,9 @@ describe("desktop device verifier boundary", () => {
       ...services(),
       readStatus: async () => ({ ...proof(), expiresAt: -1 }),
     });
-    expect((await verify({ origin })).phase).toBe("failed");
+    const expired = await verify({ origin });
+    expect(expired.phase).toBe("failed");
+    expect(expired.checks.hardware?.state).toBe("expired");
   });
   it("fails closed when the device verifier cannot be reached", async () => {
     const verify = createDesktopVerifier({

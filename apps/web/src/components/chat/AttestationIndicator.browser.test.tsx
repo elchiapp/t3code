@@ -55,11 +55,13 @@ describe("attestation status in the composer", () => {
     await expect.element(page.getByText("VM software", { exact: true })).toBeVisible();
     await expect.element(page.getByText("Exclusive key custody", { exact: true })).toBeVisible();
     await expect.element(page.getByText("Actual request routing", { exact: true })).toBeVisible();
-    await expect.element(page.getByText("Not verified", { exact: true }).nth(2)).toBeVisible();
+    await expect
+      .element(page.getByText("Trusted assumption", { exact: true }).nth(2))
+      .toBeVisible();
     await expect
       .element(
         page.getByText(
-          "Required VM hardware and connection checks passed. Software and key-custody limits are listed below.",
+          "Required VM hardware and connection checks passed. Software inside this VM is trusted.",
           { exact: true },
         ),
       )
@@ -82,12 +84,13 @@ describe("attestation status in the composer", () => {
         canSend
         onRetry={() => {}}
         environmentLabel="My MacBook"
-        provider={{ instanceId: "sealed-provider", label: "Tinfoil" }}
+        provider={{ instanceId: "sealed-provider", label: "Tinfoil · Verified inference" }}
       />,
     );
-    await screen.getByRole("button", { name: /Tinfoil verified/ }).click();
+    await screen.getByRole("button", { name: /Local device · Tinfoil/ }).click();
     await expect.element(page.getByRole("heading", { name: "Agent environment" })).toBeVisible();
     await expect.element(page.getByRole("heading", { name: "Inference endpoint" })).toBeVisible();
+    await expect.element(page.getByText("Tinfoil", { exact: true })).toBeVisible();
     await expect.element(page.getByText("My MacBook", { exact: true })).toBeVisible();
     await expect
       .element(page.getByText("https://inference.example", { exact: true }))

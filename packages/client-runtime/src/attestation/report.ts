@@ -8,6 +8,7 @@ export interface AttestationProvider {
 interface Row {
   readonly title: string;
   readonly result: string;
+  readonly tone: "green" | "yellow" | "red";
   readonly explanation: string;
   readonly detail?: string | undefined;
 }
@@ -49,7 +50,10 @@ export function attestationReport(
         ? "Claude / Anthropic"
         : undefined
     : undefined;
-  const providerName = provider?.label ?? "Selected inference provider";
+  const providerName = (provider?.label ?? "Selected inference provider").replace(
+    /^tinfoil(?:\s*·.*| via .*)?$/i,
+    "Tinfoil",
+  );
   const currentResult = (state?: string) =>
     state === "verified" && status.phase === "expired"
       ? "Expired"
@@ -70,12 +74,20 @@ export function attestationReport(
     ["environment_connection", "hardware", "tls_key_commitment"].every(
       (key) => status.checks[key]?.state === "verified",
     );
-  const row = (key: string, title: string, explanation: string): Row => ({
-    title,
-    explanation,
-    result: currentResult(status.checks[key]?.state),
-    detail: status.checks[key]?.detail,
-  });
+  const row = (key: string, title: string, explanation: string): Row => {
+    const state = status.checks[key]?.state;
+    const assumed =
+      ["proxy_workload", "key_custody", "inference_route"].includes(key) &&
+      (state === undefined || state === "not_configured");
+    const label = assumed ? "Trusted assumption" : currentResult(state);
+    return {
+      title,
+      explanation,
+      result: label,
+      tone: label === "Verified" ? "green" : state === "failed" ? "red" : "yellow",
+      detail: status.checks[key]?.detail,
+    };
+  };
   const platformRows = local
     ? [
         row(
@@ -103,19 +115,20 @@ export function attestationReport(
         row(
           "proxy_workload",
           "VM software",
-          "Checks whether the programs running inside this VM have an accepted software measurement.",
+          "The operating system, agents and proxy inside this VM are trusted. Their application code is not independently measured.",
         ),
         row(
           "key_custody",
           "Exclusive key custody",
-          "Checks whether there is accepted proof that private keys cannot leave the VM.",
+          "The trusted VM manages its private keys. Separate proof that they were never copied is outside the current scope.",
         ),
       ];
   const inferenceRows: Row[] = directService
     ? [
         {
           title: "TEE attestation",
-          result: inferenceResult,
+          result: "Not offered",
+          tone: "yellow",
           explanation:
             "This connection does not offer TEE attestation. This is not a verification failure.",
         },
@@ -124,7 +137,8 @@ export function attestationReport(
       ? [
           {
             title: "TEE attestation",
-            result: inferenceResult,
+            result: "Not configured",
+            tone: "yellow",
             explanation:
               "No trusted verifier is configured for this provider. This does not establish whether its service uses a TEE.",
           },
@@ -152,7 +166,7 @@ export function attestationReport(
           row(
             "inference_route",
             "Actual request routing",
-            "Endpoint verification alone does not prove that the agent sends each prompt to this endpoint.",
+            "The trusted agent and VM proxy route the requests. Endpoint attestation does not independently prove that application behavior.",
           ),
         ];
   const allVerified =
@@ -160,7 +174,7 @@ export function attestationReport(
   const platformSummary = local
     ? "Local device. No confidential-VM attestation applies to this environment."
     : platformPassed
-      ? "Required VM hardware and connection checks passed. Software and key-custody limits are listed below."
+      ? "Required VM hardware and connection checks passed. Software inside this VM is trusted."
       : "VM hardware or connection verification has not passed. See the individual results below.";
   const contextualLabel = provider
     ? `${local ? "Local device" : platformPassed ? "VM verified" : "VM not verified"} · ${
@@ -169,7 +183,7 @@ export function attestationReport(
           : !covered
             ? `${providerName}: not configured`
             : inferenceResult === "Verified"
-              ? `${providerName} verified`
+              ? providerName
               : `${providerName}: ${inferenceResult.toLowerCase()}`
       }`
     : undefined;
@@ -204,7 +218,7 @@ export function attestationReport(
         title: "Inference endpoint",
         name: directService ?? providerName,
         origin: covered ? targets?.inferenceOrigin : undefined,
-        summary: `${providerName} · ${inferenceResult}`,
+        summary: covered ? "Confidential compute" : inferenceResult,
         route: covered && targets ? `Via inference proxy: ${targets.proxyOrigin}` : undefined,
         rows: inferenceRows,
       },

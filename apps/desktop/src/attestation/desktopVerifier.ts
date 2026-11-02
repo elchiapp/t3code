@@ -112,14 +112,24 @@ export function createDesktopVerifier(services: {
         Number.isSafeInteger(proof.expiresAt) &&
         proof.expiresAt > now() &&
         proof.expiresAt - proof.verifiedAt <= 60_000;
+      const targetMatches =
+        proof.modelOrigin === policy.modelOrigin &&
+        /^[a-f0-9]{64}$/.test(proof.tlsSpkiSha256 ?? "") &&
+        (policy.tlsSpkiSha256 === undefined || proof.tlsSpkiSha256 === policy.tlsSpkiSha256);
       if (
         !proof.ready ||
         !fresh ||
-        proof.modelOrigin !== policy.modelOrigin ||
-        (policy.tlsSpkiSha256 !== undefined && proof.tlsSpkiSha256 !== policy.tlsSpkiSha256) ||
-        !requiredChecks.every((key) => proof.checks[key]?.state === "verified") ||
-        !/^[a-f0-9]{64}$/.test(proof.tlsSpkiSha256 ?? "")
+        !targetMatches ||
+        !requiredChecks.every((key) => proof.checks[key]?.state === "verified")
       ) {
+        const rejectedState = !targetMatches
+          ? "failed"
+          : (proof.expiresAt ?? 0) <= now()
+            ? "expired"
+            : "unavailable";
+        const rejectedDetail = !targetMatches
+          ? "Evidence does not match the approved endpoint and connection key."
+          : "This receipt is not fresh. Check again before relying on it.";
         return {
           ...failure(
             "failed",
@@ -127,7 +137,17 @@ export function createDesktopVerifier(services: {
               ? "Tinfoil release approval is required."
               : "Attestation failed. Sending requires an explicit override.",
           ),
-          checks: proof.checks,
+          checks:
+            fresh && targetMatches
+              ? proof.checks
+              : Object.fromEntries(
+                  Object.entries(proof.checks).map(([key, check]) => [
+                    key,
+                    check.state === "verified"
+                      ? { state: rejectedState, detail: rejectedDetail }
+                      : check,
+                  ]),
+                ),
         };
       }
       const target = new URL(origin);

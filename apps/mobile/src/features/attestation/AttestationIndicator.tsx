@@ -84,9 +84,21 @@ export function AttestationIndicator({
                 )}
                 {section.rows.map((row) => (
                   <View key={row.title} className="gap-1">
-                    <Text className="text-sm font-semibold">
-                      {row.title}: {row.result}
-                    </Text>
+                    <View className="flex-row items-center gap-2">
+                      <View
+                        accessible={false}
+                        className={
+                          row.tone === "green"
+                            ? "size-1.5 rounded-full bg-adaptive-emerald-700-300"
+                            : row.tone === "red"
+                              ? "size-1.5 rounded-full bg-danger-foreground"
+                              : "size-1.5 rounded-full bg-warning-foreground"
+                        }
+                      />
+                      <Text className="flex-1 text-sm font-semibold">
+                        {row.title}: {row.result}
+                      </Text>
+                    </View>
                     <Text className="text-sm text-foreground-muted">{row.explanation}</Text>
                     {row.detail && (
                       <Text className="text-sm text-foreground-muted">{row.detail}</Text>
@@ -96,8 +108,8 @@ export function AttestationIndicator({
               </View>
             ))}
             <Text className="text-sm text-foreground-muted">
-              Checks run on this device. Verifying the inference endpoint does not attest the agent
-              environment or prove each request's route.
+              Checks run on this device. The VM and its software are trusted. Yellow assumptions are
+              outside the current proof scope; they are not failed checks.
             </Text>
             <Pressable
               accessibilityRole="button"

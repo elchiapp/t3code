@@ -20,6 +20,7 @@ const decodePolicy = Schema.decodeUnknownSync(
     modelOrigin: Schema.String,
     tlsSpkiSha256: Schema.String,
     verifierSha256: Schema.String,
+    inferenceProviderIds: Schema.optionalKey(Schema.Array(Schema.String)),
   }),
 );
 

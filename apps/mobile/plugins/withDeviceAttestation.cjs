@@ -17,6 +17,10 @@ module.exports = function withDeviceAttestation(config) {
     ].map((key) => [key, policy[key]]),
   );
   const iosPolicy = { ...nativePolicy };
+  if (Array.isArray(policy.inferenceProviderIds)) {
+    nativePolicy.inferenceProviderIds = policy.inferenceProviderIds;
+    iosPolicy.inferenceProviderIds = policy.inferenceProviderIds;
+  }
   const publicProof = new URL(policy.proofOrigin);
   if (publicProof.protocol === "http:") {
     publicProof.hostname = policy.hostname;

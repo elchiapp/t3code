@@ -11,7 +11,11 @@ import { retryVerifierHost } from "./hostLifecycle";
 
 const noEnvironment = unavailableAttestation("", "Connect an environment to verify it.");
 
-export function useAttestation(environmentId: EnvironmentId) {
+export function useAttestation(
+  environmentId: EnvironmentId,
+  threadId: string | null = null,
+  instanceId?: string,
+) {
   const connection = usePreparedConnection(environmentId);
   let origin = "";
   try {
@@ -19,18 +23,32 @@ export function useAttestation(environmentId: EnvironmentId) {
       origin = normalizeAttestationOrigin(connection.value.httpBaseUrl);
   } catch {}
   const subscribe = useCallback(
-    (listener: () => void) => (origin ? clientAttestation.subscribe(origin, listener) : () => {}),
-    [origin],
+    (listener: () => void) => {
+      if (origin && threadId) clientAttestation.setInferenceProvider(origin, threadId, instanceId);
+      return origin ? clientAttestation.subscribe(origin, listener) : () => {};
+    },
+    [origin, threadId, instanceId],
   );
   const snapshot = useCallback(
-    () => (origin ? clientAttestation.get(origin) : noEnvironment),
-    [origin],
+    () => (origin ? clientAttestation.get(origin, instanceId) : noEnvironment),
+    [origin, instanceId],
   );
   const status = useSyncExternalStore(subscribe, snapshot, () => noEnvironment);
   return {
     status,
     canSend: origin !== "" && status.phase === "verified",
-    isCurrent: () => origin !== "" && clientAttestation.canSend(origin),
+    overrideAccepted:
+      origin !== "" && threadId !== null && clientAttestation.hasOverride(origin, threadId),
+    authorize: async () =>
+      origin !== "" &&
+      (await clientAttestation.authorizeWithOverride(origin, threadId, instanceId)).allowed,
+    isCurrent: () =>
+      origin !== "" &&
+      (clientAttestation.canSend(origin, instanceId) ||
+        (threadId !== null && clientAttestation.hasOverride(origin, threadId))),
+    revokeOverride: () => {
+      if (origin && threadId) clientAttestation.revokeOverride(origin, threadId);
+    },
     retry: () => {
       if (!retryVerifierHost() && origin) void clientAttestation.refresh(origin);
     },

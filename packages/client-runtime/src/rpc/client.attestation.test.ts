@@ -52,6 +52,7 @@ const fixture = Effect.gen(function* () {
   } as unknown as RpcSession["client"];
   const session: RpcSession = {
     client,
+    inboundFrames: Effect.succeed(0),
     initialConfig: Effect.die("unused"),
     subscribeServerConfig: () => Stream.empty,
     ready: Effect.void,
@@ -137,7 +138,7 @@ it.effect("dispatches once after verification on the unchanged connection", () =
     });
     using _verify = authorize;
     yield* test.execute;
-    expect(authorize).toHaveBeenCalledWith("https://vm.example", "test-thread");
+    expect(authorize).toHaveBeenCalledWith("https://vm.example", "test-thread", undefined);
     expect(test.sends()).toBe(1);
   }),
 );

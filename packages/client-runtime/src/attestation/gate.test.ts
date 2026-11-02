@@ -24,6 +24,110 @@ const make = (verify: ConstructorParameters<typeof ClientAttestationGate>[0]) =>
   );
 
 describe("client attestation gate", () => {
+  it("moves draft consent to its conversation without authorizing the next draft", async () => {
+    const gate = make(async () => unavailableAttestation(origin));
+    gate.override(origin, "project-draft");
+    gate.moveOverride(origin, "project-draft", "thread-1");
+    expect(gate.hasOverride(origin, "thread-1")).toBe(true);
+    expect(gate.hasOverride(origin, "project-draft")).toBe(false);
+    expect((await gate.authorizeWithOverride(origin, "thread-2")).allowed).toBe(false);
+  });
+
+  it("honors Cancel even if verification recovers while the prompt is open", async () => {
+    let healthy = false;
+    const gate = make(async () => (healthy ? good() : unavailableAttestation(origin)));
+    const entered = Promise.withResolvers<void>();
+    const decision = Promise.withResolvers<boolean>();
+    gate.setOverrideConfirmation(async () => {
+      entered.resolve();
+      return decision.promise;
+    });
+    const authorization = gate.authorizeWithOverride(origin, "thread-1");
+    await entered.promise;
+    healthy = true;
+    await gate.refresh(origin);
+    decision.resolve(false);
+    expect((await authorization).allowed).toBe(false);
+    expect(gate.canSend(origin)).toBe(true);
+  });
+
+  it("does not reuse an inference result for a different provider", async () => {
+    const gate = make(async () => ({
+      ...good(),
+      checks: { ...good().checks, "inference:sealed-provider": { state: "verified" } },
+    }));
+    await gate.refresh(origin);
+    expect(gate.canSend(origin, "sealed-provider")).toBe(true);
+    expect(gate.canSend(origin, "public-provider")).toBe(false);
+    expect(gate.get(origin, "public-provider").checks.inference?.state).toBe("not_configured");
+    expect(gate.get(origin, "public-provider")).toBe(gate.get(origin, "public-provider"));
+  });
+
+  it("an accepted override does not wait for an unavailable background verifier", async () => {
+    const verification = Promise.withResolvers<AttestationStatus>();
+    const gate = make(() => verification.promise);
+    gate.override(origin, "thread-1");
+    const authorization = await gate.authorizeWithOverride(origin, "thread-1");
+    expect(authorization.allowed).toBe(true);
+    expect(authorization.status.phase).not.toBe("verified");
+    verification.resolve(unavailableAttestation(origin));
+  });
+
+  it("asks once per conversation and preserves the failed verification result", async () => {
+    const gate = make(async () => unavailableAttestation(origin));
+    const prompts: string[] = [];
+    gate.setOverrideConfirmation(async (request) => {
+      prompts.push(request.threadId);
+      return true;
+    });
+    expect((await gate.authorizeWithOverride(origin, "thread-1")).allowed).toBe(true);
+    expect((await gate.authorizeWithOverride(origin, "thread-1")).allowed).toBe(true);
+    expect((await gate.authorizeWithOverride(origin, "thread-2")).allowed).toBe(true);
+    expect(prompts).toEqual(["thread-1", "thread-2"]);
+    expect(gate.get(origin).phase).toBe("unavailable");
+    expect(gate.canSend(origin)).toBe(false);
+  });
+
+  it("cancellation and missing conversation context never authorize a transfer", async () => {
+    const gate = make(async () => unavailableAttestation(origin));
+    let prompts = 0;
+    gate.setOverrideConfirmation(async () => {
+      prompts++;
+      return false;
+    });
+    expect((await gate.authorizeWithOverride(origin, "thread-1")).allowed).toBe(false);
+    await expect(gate.authorize(origin)).rejects.toThrow("unavailable");
+    expect(prompts).toBe(1);
+    expect(gate.hasOverride(origin, "thread-1")).toBe(false);
+  });
+
+  it("coalesces confirmation for concurrent writes in one conversation", async () => {
+    const gate = make(async () => unavailableAttestation(origin));
+    const entered = Promise.withResolvers<void>();
+    const decision = Promise.withResolvers<boolean>();
+    let prompts = 0;
+    gate.setOverrideConfirmation(async () => {
+      prompts++;
+      entered.resolve();
+      return decision.promise;
+    });
+    const first = gate.authorizeWithOverride(origin, "thread-1");
+    const second = gate.authorizeWithOverride(origin, "thread-1");
+    await entered.promise;
+    decision.resolve(true);
+    expect((await first).allowed).toBe(true);
+    expect((await second).allowed).toBe(true);
+    expect(prompts).toBe(1);
+  });
+
+  it("verified connections never invoke the consent interface", async () => {
+    const gate = make(async () => good());
+    gate.setOverrideConfirmation(async () => {
+      throw new Error("Verified connections must not prompt");
+    });
+    expect((await gate.authorizeWithOverride(origin, "thread-1")).allowed).toBe(true);
+  });
+
   it("does not accept a receipt from a verifier replaced while it was running", async () => {
     let finish: (status: AttestationStatus) => void = () => {};
     const gate = make(

@@ -21,8 +21,8 @@ const checks = [
   ],
   [
     "inference",
-    "Tinfoil release",
-    "Independently checks Tinfoil's hardware evidence, encryption keys and approved software release.",
+    "Inference service",
+    "Checks the configured inference service's hardware evidence, encryption keys and approved release.",
   ],
   ["proxy_workload", "VM software", "No accepted measurement of the software running on the VM."],
   [
@@ -56,10 +56,14 @@ export function AttestationIndicator({
   status,
   canSend,
   onRetry,
+  overrideAccepted = false,
+  onRevokeOverride,
 }: {
   status: AttestationStatus;
   canSend: boolean;
   onRetry: () => void;
+  overrideAccepted?: boolean;
+  onRevokeOverride?: () => void;
 }) {
   const pending = status.phase === "checking";
   const complete = canSend && checks.every(([key]) => status.checks[key]?.state === "verified");
@@ -110,6 +114,14 @@ export function AttestationIndicator({
         </PopoverTrigger>
         <PopoverPopup width="md" align="start">
           <div className="space-y-3 text-xs">
+            {overrideAccepted && (
+              <div className="space-y-2">
+                <p>Unverified sending is allowed for this conversation until you close the app.</p>
+                <Button size="sm" variant="outline" onClick={onRevokeOverride}>
+                  Require verification
+                </Button>
+              </div>
+            )}
             <p>
               {canSend && !complete
                 ? "Chat is enabled because the required checks passed. Full VM verification is incomplete."

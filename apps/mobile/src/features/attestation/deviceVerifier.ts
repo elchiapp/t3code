@@ -5,6 +5,7 @@ export interface MobileProofPolicy {
   readonly proofOrigin: string;
   readonly environmentOrigins: ReadonlyArray<string>;
   readonly tlsSpkiSha256: string;
+  readonly inferenceProviderIds?: ReadonlyArray<string>;
 }
 
 export interface MobileProofOperations {
@@ -59,9 +60,11 @@ export function createMobileDeviceVerifier(
       )
         return failure("This environment has no trusted device policy.");
       if (!(await operations.transportProtected()))
-        return failure("Native connection protection is unavailable. Sending is blocked.");
+        return failure(
+          "Native connection protection is unavailable. Sending requires confirmation.",
+        );
     } catch {
-      return failure("Device verification is unavailable. Sending is blocked.");
+      return failure("Device verification is unavailable. Sending requires confirmation.");
     }
     if (
       !request.refresh &&
@@ -101,8 +104,14 @@ export function createMobileDeviceVerifier(
         await operations.verifyHardware(prepared.challenge, evidence);
         stage = "Checking Tinfoil evidence";
         const inference = await operations.verifyInference();
+        const coveredInference = Object.fromEntries(
+          (policy.inferenceProviderIds ?? ["tinfoil"]).map((id) => [`inference:${id}`, inference]),
+        );
         if (inference.state !== "verified")
-          return { ...failure(inference.detail), checks: { inference } };
+          return {
+            ...failure(inference.detail),
+            checks: { inference, ...coveredInference },
+          };
         if (prepared.expiresAt <= now() || !(await operations.transportProtected()))
           return failure("Verification expired or connection protection changed.");
         accepted = {
@@ -127,6 +136,7 @@ export function createMobileDeviceVerifier(
               detail: "Native HTTPS and WebSocket connections enforce the same VM key.",
             },
             inference,
+            ...coveredInference,
             proxy_workload: {
               state: "not_configured",
               detail: "The VM software is not independently measured.",
@@ -146,7 +156,7 @@ export function createMobileDeviceVerifier(
       } catch (cause) {
         accepted = undefined;
         const detail = cause instanceof Error ? cause.message.slice(0, 200) : "Verification failed";
-        return failure(`${stage}: ${detail}. Sending is blocked.`);
+        return failure(`${stage}: ${detail}. Sending requires confirmation.`);
       } finally {
         pending = undefined;
       }

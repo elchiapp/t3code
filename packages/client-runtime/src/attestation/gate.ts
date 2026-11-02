@@ -1,5 +1,6 @@
 import type { AttestationRequest, AttestationStatus, DesktopBridge } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
+export { withClientAttestationThread } from "./commands.ts";
 
 const REQUIRED_CHECKS = [
   "hardware",
@@ -36,6 +37,13 @@ export interface AttestationAuthorization {
   readonly status: AttestationStatus;
   readonly allowed: boolean;
   readonly requiresOverride: boolean;
+  readonly cancelled?: boolean;
+}
+
+export interface AttestationConfirmation {
+  readonly origin: string;
+  readonly threadId: string;
+  readonly status: AttestationStatus;
 }
 
 export class ClientAttestationGate {
@@ -43,6 +51,13 @@ export class ClientAttestationGate {
   private readonly overriddenThreads = new Map<string, Set<string>>();
   private verify: (request: AttestationRequest) => Promise<AttestationStatus>;
   private generation = 0;
+  private confirmOverride: ((request: AttestationConfirmation) => Promise<boolean>) | undefined;
+  private readonly pendingConfirmations = new Map<string, Promise<boolean>>();
+  private readonly threadProviders = new Map<string, string>();
+  private readonly providerSnapshots = new WeakMap<
+    AttestationStatus,
+    Map<string, AttestationStatus>
+  >();
   private readonly now: () => number;
   private readonly monotonic: () => number;
   constructor(
@@ -58,6 +73,7 @@ export class ClientAttestationGate {
   setDeviceVerifier(verify: (request: AttestationRequest) => Promise<AttestationStatus>): void {
     this.generation++;
     this.verify = verify;
+    this.overriddenThreads.clear();
     for (const [origin, entry] of this.entries) {
       entry.timer?.abort();
       entry.status = unavailableAttestation(
@@ -69,6 +85,12 @@ export class ClientAttestationGate {
       this.emit(entry);
       this.schedule(origin, entry);
     }
+  }
+
+  setOverrideConfirmation(
+    confirm: ((request: AttestationConfirmation) => Promise<boolean>) | undefined,
+  ): void {
+    this.confirmOverride = confirm;
   }
 
   private entry(origin: string): Entry {
@@ -89,7 +111,39 @@ export class ClientAttestationGate {
     return entry;
   }
 
-  get(origin: string): AttestationStatus {
+  setInferenceProvider(origin: string, threadId: string, instanceId: string | undefined): void {
+    const key = JSON.stringify([origin, threadId]);
+    if (instanceId) this.threadProviders.set(key, instanceId);
+    else this.threadProviders.delete(key);
+  }
+
+  private providerStatus(status: AttestationStatus, instanceId?: string): AttestationStatus {
+    if (!instanceId) return status;
+    let snapshots = this.providerSnapshots.get(status);
+    if (!snapshots) {
+      snapshots = new Map();
+      this.providerSnapshots.set(status, snapshots);
+    }
+    const cached = snapshots.get(instanceId);
+    if (cached) return cached;
+    const inference = status.checks[`inference:${instanceId}`] ?? {
+      state: "not_configured",
+      detail: "Independent inference verification is not configured for this provider.",
+    };
+    const uncovered = status.phase === "verified" && inference.state !== "verified";
+    const snapshot: AttestationStatus = {
+      ...status,
+      phase: uncovered ? "unavailable" : status.phase,
+      message: uncovered
+        ? "This provider is not covered by the configured inference verifier."
+        : status.message,
+      checks: { ...status.checks, inference },
+    };
+    snapshots.set(instanceId, snapshot);
+    return snapshot;
+  }
+
+  get(origin: string, instanceId?: string): AttestationStatus {
     const entry = this.entry(origin);
     if (entry.status.phase === "verified" && !this.canSend(origin)) {
       entry.status = {
@@ -98,18 +152,19 @@ export class ClientAttestationGate {
         message: "Verification expired. Checking again before sending.",
       };
     }
-    return entry.status;
+    return this.providerStatus(entry.status, instanceId);
   }
 
-  canSend(origin: string): boolean {
+  canSend(origin: string, instanceId?: string): boolean {
     const entry = this.entry(origin);
+    const status = this.providerStatus(entry.status, instanceId);
     return (
-      entry.status.phase === "verified" &&
-      entry.status.origin === origin &&
-      entry.status.expiresAt !== null &&
-      this.now() < entry.status.expiresAt &&
+      status.phase === "verified" &&
+      status.origin === origin &&
+      status.expiresAt !== null &&
+      this.now() < status.expiresAt &&
       this.monotonic() < entry.deadline &&
-      REQUIRED_CHECKS.every((key) => entry.status.checks[key]?.state === "verified")
+      REQUIRED_CHECKS.every((key) => status.checks[key]?.state === "verified")
     );
   }
 
@@ -126,6 +181,24 @@ export class ClientAttestationGate {
       this.overriddenThreads.set(origin, threads);
     }
     threads.add(threadId);
+    entry.status = { ...entry.status };
+    this.emit(entry);
+  }
+
+  revokeOverride(origin: string, threadId: string): void {
+    if (!this.overriddenThreads.get(origin)?.delete(threadId)) return;
+    const entry = this.entry(origin);
+    entry.status = { ...entry.status };
+    this.emit(entry);
+  }
+
+  moveOverride(origin: string, draftId: string, threadId: string): void {
+    if (draftId === threadId) return;
+    const threads = this.overriddenThreads.get(origin);
+    if (!threads?.delete(draftId)) return;
+    threads.add(threadId);
+    const entry = this.entry(origin);
+    entry.status = { ...entry.status };
     this.emit(entry);
   }
 
@@ -139,7 +212,7 @@ export class ClientAttestationGate {
     const started = this.now();
     const generation = this.generation;
     const monotonicStarted = this.monotonic();
-    if (force || !this.canSend(origin)) {
+    if (force || entry.status.phase === "checking") {
       entry.status = { ...entry.status, phase: "checking", message: "Verifying connection…" };
     }
     entry.pending = (async () => {
@@ -189,19 +262,76 @@ export class ClientAttestationGate {
     return entry.pending;
   }
 
-  async authorize(origin: string): Promise<void> {
-    const authorization = await this.authorizeWithOverride(origin, null);
-    if (!authorization.allowed) throw new Error(authorization.status.message);
+  async authorize(origin: string, threadId: string | null = null): Promise<void> {
+    const authorization = await this.authorizeWithOverride(origin, threadId);
+    if (!authorization.allowed)
+      throw new Error(
+        authorization.cancelled ? "Sending cancelled." : authorization.status.message,
+      );
   }
 
   async authorizeWithOverride(
     origin: string,
     threadId: string | null,
+    instanceId?: string,
   ): Promise<AttestationAuthorization> {
-    await this.refresh(origin, false);
-    const status = this.get(origin);
+    const provider =
+      instanceId ??
+      (threadId ? this.threadProviders.get(JSON.stringify([origin, threadId])) : undefined);
+    if (threadId && this.hasOverride(origin, threadId)) {
+      const status = this.get(origin, provider);
+      void this.refresh(origin, false);
+      return { status, allowed: true, requiresOverride: false };
+    }
+    const known = this.get(origin, provider);
+    if (
+      this.confirmOverride &&
+      threadId &&
+      known.phase !== "checking" &&
+      !this.canSend(origin, provider)
+    )
+      void this.refresh(origin, false);
+    else await this.refresh(origin, false);
+    if (
+      !this.canSend(origin, provider) &&
+      threadId !== null &&
+      threadId !== "" &&
+      !this.hasOverride(origin, threadId) &&
+      this.confirmOverride
+    ) {
+      const key = JSON.stringify([origin, threadId]);
+      let pending = this.pendingConfirmations.get(key);
+      if (!pending) {
+        const confirm = this.confirmOverride;
+        const generation = this.generation;
+        pending = Promise.resolve().then(async () => {
+          if (this.canSend(origin, provider)) return true;
+          const accepted = await confirm({
+            origin,
+            threadId,
+            status: this.get(origin, provider),
+          }).catch(() => false);
+          if (!accepted || generation !== this.generation) return false;
+          this.override(origin, threadId);
+          return true;
+        });
+        this.pendingConfirmations.set(key, pending);
+      }
+      try {
+        if (!(await pending))
+          return {
+            status: this.get(origin, provider),
+            allowed: false,
+            requiresOverride: !this.canSend(origin, provider),
+            cancelled: true,
+          };
+      } finally {
+        if (this.pendingConfirmations.get(key) === pending) this.pendingConfirmations.delete(key);
+      }
+    }
+    const status = this.get(origin, provider);
     const allowed =
-      this.canSend(origin) ||
+      this.canSend(origin, provider) ||
       (threadId !== null && threadId !== "" && this.hasOverride(origin, threadId));
     return { status, allowed, requiresOverride: !allowed };
   }
@@ -224,7 +354,7 @@ export class ClientAttestationGate {
   subscribe(origin: string, listener: () => void): () => void {
     const entry = this.entry(origin);
     entry.listeners.add(listener);
-    if (!this.canSend(origin) && !entry.pending) void this.refresh(origin);
+    if (!this.canSend(origin) && !entry.pending) void this.refresh(origin, false);
     else this.schedule(origin, entry);
     return () => {
       entry.listeners.delete(listener);

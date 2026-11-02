@@ -30,6 +30,7 @@ vi.mock("../../attestation/useOriginAttestation", () => ({
   useOriginAttestation: () => ({
     canSend: gate.allowed,
     isCurrent: () => gate.allowed,
+    authorize: async () => gate.allowed,
     retry: () => {},
     status: {
       origin: "http://fixture.example",
@@ -247,7 +248,7 @@ function visit(path: string): Disposable {
 }
 
 describe("GuestPage", () => {
-  it("disables guest chat and sends no POST when verification fails", async () => {
+  it("keeps the guest draft local until unverified sending is approved", async () => {
     using _verification = verificationFixture(false);
     using _page = visit(`/guest?share=${SHARE_ID}`);
     using fetchSpy = vi
@@ -258,9 +259,12 @@ describe("GuestPage", () => {
       .mockImplementation(fakeEventSource(opening([run("run-1", 1, "completed")], items)) as never);
     await using screen = await render(<GuestPage />);
     await expect.element(screen.getByText("Fixture verification")).toBeVisible();
-    await expect.element(screen.getByRole("textbox", { name: "Message" })).toBeDisabled();
-    await expect.element(screen.getByRole("button", { name: "Send", exact: true })).toBeDisabled();
-    await userEvent.keyboard("private draft{Enter}");
+    await expect.element(screen.getByRole("textbox", { name: "Message" })).toBeEnabled();
+    await screen.getByRole("textbox", { name: "Message" }).fill("private draft");
+    await screen.getByRole("button", { name: "Send", exact: true }).click();
+    await expect
+      .element(screen.getByRole("textbox", { name: "Message" }))
+      .toHaveValue("private draft");
     expect(fetchSpy.mock.calls.filter(([, options]) => options?.method === "POST")).toHaveLength(0);
   });
 
@@ -295,7 +299,7 @@ describe("GuestPage", () => {
     expect(screen.container.querySelector('[aria-label="Fork from this response"]')).toBeNull();
     expect(socket).not.toHaveBeenCalled();
     // The composer names the thread's model, as the owner's does, with nothing to pick.
-    await expect.element(screen.getByLabelText("Model: 5.4")).toBeVisible();
+    await expect.element(screen.getByLabelText("Model: GPT-5.4")).toBeVisible();
   });
 
   it("sends attached files with the message, as form data", async () => {

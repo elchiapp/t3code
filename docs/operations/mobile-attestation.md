@@ -26,7 +26,9 @@ to its separately configured Tailscale IP.
 
 The shared command and attachment gates require fresh proof. Missing native
 protection, unknown inference releases, bad signatures, wrong key commitments,
-expiry or an unavailable verifier block new sends. Changing the verifier drops
+expiry or an unavailable verifier require explicit user confirmation before new
+sends. Consent stays with that origin and conversation for the current app
+session; the details can revoke it. A new conversation asks again. Changing the verifier drops
 cached permission and refuses results still pending from the previous verifier.
 The details remain honest about unmeasured VM software, exclusive key custody
 and actual VM inference routing. Those protections are not supplied by this fork.
@@ -89,7 +91,8 @@ that iPhone's UDID in its provisioning profile. A Metro-dependent development
 client does not satisfy the independent-phone acceptance requirement.
 
 Current owner-approved release policy is baked into the first build. An unknown
-future Tinfoil release remains blocked until an explicit reviewed policy update;
-refresh alone never approves a new release. App signing and distribution,
+future Tinfoil release is never marked verified without a reviewed policy update;
+refresh or a conversation override never approves a release. The inference
+service can still refuse requests under its own release policy. App signing and distribution,
 physical iPhone testing, Android native acceptance and independent production
 security review are separate release gates.

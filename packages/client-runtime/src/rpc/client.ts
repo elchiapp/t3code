@@ -21,7 +21,11 @@ import * as EnvironmentSupervisor from "../connection/supervisor.ts";
 import type { WsRpcProtocolClient } from "../rpc/protocol.ts";
 import type { RpcSession } from "../rpc/session.ts";
 import { clientAttestation, normalizeAttestationOrigin } from "../attestation/gate.ts";
-import { clientAttestationThreadId, requiresClientAttestation } from "../attestation/commands.ts";
+import {
+  clientAttestationThreadId,
+  clientAttestationProviderId,
+  requiresClientAttestation,
+} from "../attestation/commands.ts";
 
 export class EnvironmentRpcUnavailableError extends Schema.TaggedError<EnvironmentRpcUnavailableError>()(
   "EnvironmentRpcUnavailableError",
@@ -51,7 +55,6 @@ export type EnvironmentRpcTag = keyof WsRpcProtocolClient & string;
 type RpcMethod<TTag extends EnvironmentRpcTag> = WsRpcProtocolClient[TTag];
 
 export type EnvironmentSubscriptionRpcTag =
-  | typeof WS_METHODS.codexAuthCallbackSubscribe
   | typeof WS_METHODS.providerAuthSubscribe
   | typeof WS_METHODS.providerInstallSubscribe
   | typeof ORCHESTRATION_V2_WS_METHODS.subscribeShell
@@ -64,7 +67,6 @@ export type EnvironmentSubscriptionRpcTag =
   | typeof WS_METHODS.scheduledTasksSubscribe
   | typeof WS_METHODS.serverGetStorageCleanupReport
   | typeof WS_METHODS.serverGetDatabaseStorage
-  | typeof WS_METHODS.subscribeTerminalEvents
   | typeof WS_METHODS.subscribeTerminalMetadata
   | typeof WS_METHODS.subscribePreviewEvents
   | typeof WS_METHODS.subscribeDiscoveredLocalServers
@@ -202,6 +204,7 @@ const authorizeRequest = Effect.fn("EnvironmentRpc.authorize")(function* (
         clientAttestation.authorizeWithOverride(
           normalizeAttestationOrigin(prepared.value.httpBaseUrl),
           clientAttestationThreadId(input),
+          clientAttestationProviderId(input),
         ),
       catch: (error) =>
         new EnvironmentRpcUnavailableError({
@@ -212,9 +215,11 @@ const authorizeRequest = Effect.fn("EnvironmentRpc.authorize")(function* (
     if (!authorization.allowed) {
       return yield* new EnvironmentRpcUnavailableError({
         environmentId: supervisor.target.environmentId,
-        message: authorization.requiresOverride
-          ? "This environment was not attested. Confirm sending in the composer."
-          : authorization.status.message,
+        message: authorization.cancelled
+          ? "Sending cancelled."
+          : authorization.requiresOverride
+            ? "This environment was not attested. Confirm sending in the composer."
+            : authorization.status.message,
       });
     }
   }

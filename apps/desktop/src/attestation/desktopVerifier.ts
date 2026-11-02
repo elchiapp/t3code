@@ -14,6 +14,8 @@ const Policy = Schema.Struct({
   verifierOrigin: Schema.String,
   modelOrigin: Schema.String,
   allowedEnvironmentOrigins: Schema.Array(Schema.String),
+  tlsSpkiSha256: Schema.optionalKey(Schema.String),
+  inferenceProviderIds: Schema.optionalKey(Schema.Array(Schema.String)),
 });
 export type DeviceAttestationPolicy = typeof Policy.Type;
 const decodeDevicePolicy = Schema.decodeUnknownSync(Policy);
@@ -68,7 +70,20 @@ export function createDesktopVerifier(services: {
         return failed("unavailable", "The verifier must run on this device.");
       if (new URL(policy.modelOrigin).protocol !== "https:")
         return failed("unavailable", "Inference verification requires HTTPS.");
-      const read = async () => decodeProof(await services.readStatus(verifier.origin));
+      const read = async (): Promise<typeof LocalProof.Type> => {
+        const proof = decodeProof(await services.readStatus(verifier.origin));
+        return {
+          ...proof,
+          checks: {
+            ...proof.checks,
+            ...Object.fromEntries(
+              (policy.inferenceProviderIds ?? ["tinfoil"]).flatMap((id) =>
+                proof.checks.inference ? [[`inference:${id}`, proof.checks.inference]] : [],
+              ),
+            ),
+          },
+        };
+      };
       let proof = await read();
       if (request.refresh || !proof.ready || (proof.expiresAt ?? 0) <= now() + 10_000) {
         await services.refresh(verifier.origin);
@@ -86,6 +101,7 @@ export function createDesktopVerifier(services: {
         !proof.ready ||
         !fresh ||
         proof.modelOrigin !== policy.modelOrigin ||
+        (policy.tlsSpkiSha256 !== undefined && proof.tlsSpkiSha256 !== policy.tlsSpkiSha256) ||
         !requiredChecks.every((key) => proof.checks[key]?.state === "verified") ||
         !/^[a-f0-9]{64}$/.test(proof.tlsSpkiSha256 ?? "")
       ) {
@@ -147,7 +163,12 @@ export function createCertificateVerifier(services: Parameters<typeof createDesk
         const url = new URL(value);
         return url.protocol === "https:" && url.hostname === hostname;
       });
-      if (!origin) return -2;
+      if (!origin) return -3;
+      if (policy.tlsSpkiSha256 !== undefined) {
+        return /^[a-f0-9]{64}$/.test(policy.tlsSpkiSha256) && peerKey === policy.tlsSpkiSha256
+          ? 0
+          : -2;
+      }
       const verify = createDesktopVerifier({ ...services, peerKey: async () => peerKey });
       return (await verify({ origin })).phase === "verified" ? 0 : -2;
     } catch {

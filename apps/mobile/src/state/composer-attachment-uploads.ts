@@ -4,6 +4,7 @@ import { AuthOrchestrationOperateScope, type EnvironmentId } from "@t3tools/cont
 import { Atom, AsyncResult } from "effect/reactivity";
 
 import { prepareTurnAttachments } from "../lib/attachmentUpload";
+import { mobileAttestationThread } from "../features/attestation/scope";
 import { retainComposerAttachmentFileForPreview } from "../lib/composerAttachmentPreviewRetention";
 import {
   isFileBackedComposerAttachment,
@@ -129,12 +130,22 @@ export function createComposerAttachmentUploadWorker(
   const queue = createComposerAttachmentUploadQueue({
     onChange: (states) => appAtomRegistry.set(composerAttachmentUploadsAtom, states),
     upload: async ({ environmentId, attachment }, signal, onProgress) => {
+      const queued = flattenQueuedThreadMessages(
+        appAtomRegistry.get(threadOutboxManager.queuedMessagesByThreadKeyAtom),
+      );
+      const owner = Object.entries(appAtomRegistry.get(composerDraftsAtom)).find(
+        ([key, draft]) =>
+          composerDraftEnvironmentId(key, queued, draft) === environmentId &&
+          draft.attachments.some((candidate) => candidate.id === attachment.id),
+      );
+      const attestationThreadId = owner ? mobileAttestationThread(owner[0], queued) : null;
       const release = isFileBackedComposerAttachment(attachment)
         ? retainComposerAttachmentFileForPreview(attachment)
         : undefined;
       const prepared = await settlePromise(() =>
         prepareTurnAttachments({
           environmentId,
+          ...(attestationThreadId ? { attestationThreadId } : {}),
           attachments: [attachment],
           supportsImageUploads: true,
           signal,

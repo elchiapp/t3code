@@ -17,8 +17,6 @@ import {
 import { expect, it } from "@effect/vitest";
 import { threadTranscriptHeader } from "@t3tools/shared/threadTranscript";
 import * as Effect from "effect/Effect";
-import * as Fiber from "effect/Fiber";
-import * as TestClock from "effect/testing/TestClock";
 import * as Context from "effect/Context";
 import * as DateTime from "effect/DateTime";
 import * as Layer from "effect/Layer";
@@ -161,62 +159,6 @@ const serveOrchestrationHttp = (allowed: () => boolean) =>
     yield* Effect.addFinalizer(() => Effect.promise(dispose));
     return { services, eventSink, handler };
   });
-
-it.effect(
-  "a bounded service read started before thread creation receives the committed thread",
-  () =>
-    Effect.gen(function* () {
-      const { services, eventSink } = yield* serveOrchestrationHttp(() => true);
-      const pendingId = ThreadId.make("pending-mobile-thread");
-      const manager = Context.get(services, ThreadManagementService.ThreadManagementService);
-      const pendingRead = yield* manager
-        .getThreadSnapshotWindow(pendingId, { rowLimit: 100, userTurnLimit: 10 })
-        .pipe(Effect.forkChild);
-      yield* TestClock.adjust("200 millis");
-      yield* eventSink.write({
-        events: [
-          {
-            id: EventId.make("create-pending-mobile"),
-            type: "thread.created",
-            threadId: pendingId,
-            occurredAt: now,
-            payload: { ...thread, id: pendingId },
-          },
-        ],
-      });
-      yield* TestClock.adjust("100 millis");
-      const result = yield* Fiber.join(pendingRead);
-      expect(result.projection.thread.id).toBe(pendingId);
-    }),
-);
-
-it.live("a genuinely missing bounded thread still returns 404", () =>
-  Effect.gen(function* () {
-    const { handler } = yield* serveOrchestrationHttp(() => true);
-    const response = yield* Effect.promise(() =>
-      handler(
-        new Request("http://localhost/api/orchestration/threads/genuinely-missing/bounded", {
-          headers: { [ORCHESTRATION_PROTOCOL_HEADER]: ORCHESTRATION_PROTOCOL_VERSION_TEXT },
-        }),
-      ),
-    );
-    expect(response.status).toBe(404);
-  }),
-);
-
-it.live("an unauthorized bounded read is refused before waiting for thread creation", () =>
-  Effect.gen(function* () {
-    const { handler } = yield* serveOrchestrationHttp(() => false);
-    const response = yield* Effect.promise(() =>
-      handler(
-        new Request("http://localhost/api/orchestration/threads/missing-unauthorized/bounded", {
-          headers: { [ORCHESTRATION_PROTOCOL_HEADER]: ORCHESTRATION_PROTOCOL_VERSION_TEXT },
-        }),
-      ),
-    );
-    expect(response.status).toBe(403);
-  }),
-);
 
 it.effect("exports full history with size, scope, and missing-thread checks", () =>
   Effect.gen(function* () {

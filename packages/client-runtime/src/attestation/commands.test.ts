@@ -1,8 +1,24 @@
 import { describe, expect, it } from "vite-plus/test";
 import { ORCHESTRATION_V2_WS_METHODS, WS_METHODS } from "@t3tools/contracts";
-import { clientAttestationThreadId, requiresClientAttestation } from "./commands.ts";
+import {
+  clientAttestationThreadId,
+  requiresClientAttestation,
+  withClientAttestationThread,
+} from "./commands.ts";
 
 describe("attestation write boundary", () => {
+  it("carries an attachment's conversation context without changing its wire payload", () => {
+    const payload = { name: "photo.png", mimeType: "image/png", sizeBytes: 12 };
+    const scoped = withClientAttestationThread(payload, "thread-1");
+    expect(clientAttestationThreadId(scoped)).toBe("thread-1");
+    expect(JSON.parse(JSON.stringify(scoped))).toEqual(payload);
+    expect(clientAttestationThreadId(JSON.parse(JSON.stringify(scoped)))).toBeNull();
+  });
+  it("uses the actual command thread instead of a conflicting client hint", () => {
+    expect(
+      clientAttestationThreadId(withClientAttestationThread({ threadId: "actual" }, "hint")),
+    ).toBe("actual");
+  });
   it.each([
     "message.dispatch",
     "queued-run.edit",

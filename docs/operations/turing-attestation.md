@@ -1,11 +1,12 @@
 # Turing confidential-VM fork
 
 This fork adds a device-side attestation gate to the T3 client. A small status
-indicator sits above the composer. Chat is disabled while verification is
-checking, unavailable, expired or failed. The shared command boundary checks
-again before dispatch; pressing Enter, resuming a queue or invoking a send
-programmatically does not skip that boundary. Attachment metadata and bytes are
-also gated. Stop and cancellation remain available.
+indicator sits above the composer. Required checks run before dispatch. When
+they do not pass, the user can explicitly allow unverified sending for that
+conversation until the app closes. A different origin or conversation asks
+again. The details show the actual proof state and let the user require
+verification again. Cancellation sends nothing. Attachment metadata and bytes
+use the same conversation permission. Stop and tool approvals remain available.
 
 The gate uses the same owned hardware-verification core and pinned Tinfoil SDK
 as KiapChat. Cryptographic checks run in the installed verifier on the user's
@@ -13,9 +14,10 @@ device. The client reads its result through native IPC, not from the VM's UI or
 a server-supplied ready flag. For a remote T3 environment, the native client also
 checks that its HTTPS public key matches the VM's verified key commitment.
 Chromium also verifies the actual TLS transport certificate before allowing a
-remote connection. The app session permits HTTPS only to configured environment
-hosts with accepted proof; ordinary certificate errors remain errors. Preview
-browser sessions are separate and retain normal website access.
+remote connection. Approved server-key pins remain enforced even when fresh
+attestation is unavailable. New hosts retain ordinary certificate validation;
+connecting to them does not make them attested. Preview browser sessions are
+separate and retain normal website access.
 
 ## Trust and scope
 
@@ -31,11 +33,33 @@ Chat is enabled under the current hardware-and-inference policy; that permission
 does not mean full VM verification passed. Missing optional checks also remain
 incomplete rather than silently displaying a full pass.
 
-This fork defaults closed when a device has no trusted verifier. The desktop
-adapter is implemented here. Standalone web and mobile clients do not silently
-fall back to server assertions: without a device-verifier adapter their chat
-controls remain disabled. Do not claim mobile attestation acceptance from the
-desktop tests.
+A client without a trusted verifier reports that verification is unavailable.
+It requires explicit conversation consent rather than trusting a server assertion.
+The mobile adapter verifies evidence inside the signed app; see
+[mobile setup](mobile-attestation.md). Native acceptance remains platform-specific.
+
+## Server and adapter boundaries
+
+The T3 backend matches upstream stable `v0.1.6`. Attestation requires a separate
+host proof agent, not changes to T3's messaging, provider or authentication APIs.
+The unrelated new-thread retry workaround is not part of the current backend.
+
+The shared client gate consumes normalized checks. Vendor-specific quote and
+release verification stay in adapters. Current adapters cover AMD SEV-SNP and
+Tinfoil; other TEE formats still require a verifier and approved policy. A remote
+claim that a service uses a TEE is not evidence.
+
+Inference results are scoped to provider instances with client-owned
+`inference:<instanceId>` checks. A Tinfoil result does not verify ChatGPT or
+Claude. Protected device policy can list `inferenceProviderIds` for aliases of
+the same configured attested endpoint. `tlsSpkiSha256` preserves the independently
+approved connection key when the proof service is unavailable. These settings
+contain public trust data, never API keys or pairing credentials.
+
+Keep service recipes under `integrations/confidential-vm` separate from changes
+to upstream T3 code. Check the fork diff against each new stable upstream tag;
+keep compatibility fixes independent so they can be removed when upstream fixes
+them. Native clients must retain their controlled signing/update channel.
 
 ## Set up a device
 
@@ -70,7 +94,9 @@ The public evidence endpoint requires the Tailscale owner identity and returns
 raw proof data, not a trusted verified flag. The laptop verifier checks signatures,
 fresh nonces, the firmware/TCB policy, the approved inference release and HTTPS
 key commitment. A new request waits for current proof. Unknown releases and
-failed evidence block sends; no automatic insecure fallback is provided.
+failed evidence never become verified through an override. A client override
+does not alter server access rules, certificate pins, tool approvals or the
+inference gateway's own release policy.
 
 ## Test and recovery
 

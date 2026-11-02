@@ -1,4 +1,8 @@
-import { clientAttestation, normalizeAttestationOrigin } from "@t3tools/client-runtime/attestation";
+import {
+  clientAttestation,
+  normalizeAttestationOrigin,
+  withClientAttestationThread,
+} from "@t3tools/client-runtime/attestation";
 import {
   AuthOrchestrationOperateScope,
   PROVIDER_SEND_TURN_SUPPORTED_IMAGE_MIME_TYPES,
@@ -58,6 +62,8 @@ interface UploadJob {
   stopWatchingConnection: () => void;
 }
 
+type DraftFileOwner = Pick<UploadJob, "image" | "environmentId" | "draftTarget">;
+
 const jobsByImageId = new Map<string, UploadJob>();
 const queue: UploadJob[] = [];
 const activeUploadsByEnvironment = new Map<EnvironmentId, number>();
@@ -83,7 +89,7 @@ export function readAttachmentUpload(imageId: string): AttachmentUploadState | u
   return useAttachmentUploadStore.getState().uploadsByImageId[imageId];
 }
 
-function resolveCurrentFileDraftTarget(job: UploadJob): ComposerThreadTarget | undefined {
+function resolveCurrentFileDraftTarget(job: DraftFileOwner): ComposerThreadTarget | undefined {
   if (job.draftTarget === undefined || job.image.type !== "file") {
     return undefined;
   }
@@ -111,7 +117,7 @@ function resolveCurrentFileDraftTarget(job: UploadJob): ComposerThreadTarget | u
 }
 
 /** Persist background completions even when no composer is mounted. */
-function stampDraftFileUpload(job: UploadJob, attachmentId: string): void {
+function stampDraftFileUpload(job: DraftFileOwner, attachmentId: string): void {
   const draftTarget = resolveCurrentFileDraftTarget(job);
   if (draftTarget === undefined) {
     return;
@@ -164,6 +170,13 @@ function uploadBytes(input: {
 }
 
 async function runUpload(job: UploadJob): Promise<void> {
+  const owner = job.draftTarget;
+  const threadId =
+    owner === undefined
+      ? null
+      : typeof owner === "string"
+        ? (useComposerDraftStore.getState().getDraftThread(owner)?.threadId ?? owner)
+        : owner.threadId;
   if (!readEnvironmentScope(job.environmentId, AuthOrchestrationOperateScope)) {
     setUploadState(job.image.id, {
       status: "failed",
@@ -262,19 +275,22 @@ async function runUpload(job: UploadJob): Promise<void> {
   }
   const result = await runAttachmentUploadCycle({
     authorizeTransfer: async (url) => {
-      await clientAttestation.authorize(normalizeAttestationOrigin(url));
+      await clientAttestation.authorize(normalizeAttestationOrigin(url), threadId);
       if (job.cancelled) throw new Error("Upload cancelled");
     },
     registry: appAtomRegistry,
     createUploadUrl: attachmentEnvironment.createUploadUrl,
     remove: attachmentEnvironment.remove,
     environmentId: job.environmentId,
-    upload: {
-      ...(job.image.type === "file" ? { type: "file" as const } : {}),
-      name: job.image.name,
-      mimeType,
-      sizeBytes: file.size,
-    },
+    upload: withClientAttestationThread(
+      {
+        ...(job.image.type === "file" ? { type: "file" as const } : {}),
+        name: job.image.name,
+        mimeType,
+        sizeBytes: file.size,
+      },
+      threadId ?? "",
+    ),
     resolveUploadUrl: (relativeUrl) => {
       if (
         job.cancelled ||
@@ -407,6 +423,9 @@ export function startAttachmentUpload(input: {
 
   const existing = readAttachmentUpload(input.image.id);
   if (existing?.status === "ready" && existing.environmentId === input.environmentId) {
+    // A file restored into a draft after its upload finished (stash, failed send) missed the
+    // completion stamp; stamping here keeps it from re-uploading after a reload.
+    stampDraftFileUpload(input, existing.attachmentId);
     return;
   }
   if (existing?.status === "failed" && existing.environmentId === input.environmentId) {

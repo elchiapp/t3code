@@ -1,3 +1,4 @@
+import "./confirmation";
 import { useEffect, useRef, useState } from "react";
 import { View } from "react-native";
 import { Asset } from "expo-asset";
@@ -36,7 +37,7 @@ export function VerifierHost() {
   const approvedOrigins = useRef<ReadonlyArray<string>>([]);
   const stop = useRef(() => {});
 
-  // oxlint-disable-next-line t3code/react-effect-budget -- Own the isolated verifier's signed resources and native lifecycle.
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- Keeps the native WebView verifier, signed asset and request registry in step with this host's mounted lifecycle.
   useEffect(() => {
     let active = true;
     const currentAttempt = attempt;
@@ -45,7 +46,7 @@ export function VerifierHost() {
       clientAttestation.setDeviceVerifier(async (request) =>
         unavailableAttestation(
           request.origin,
-          "Phone verification is unavailable. Sending is blocked.",
+          "Phone verification is unavailable. Sending requires confirmation.",
         ),
       );
       for (const operation of pending.current.values())

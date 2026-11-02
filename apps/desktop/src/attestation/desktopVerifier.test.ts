@@ -35,10 +35,30 @@ describe("desktop device verifier boundary", () => {
     expect(await verify("vm.example", "b".repeat(64), true)).toBe(-2);
     expect(await verify("vm.example", key, true)).toBe(0);
   });
-  it("never overrides certificate errors or permits an unconfigured TLS host", async () => {
+  it("keeps normal certificate validation for hosts without an attestation profile", async () => {
     const verify = createCertificateVerifier(services());
     expect(await verify("vm.example", key, false)).toBe(-2);
-    expect(await verify("other.example", key, true)).toBe(-2);
+    expect(await verify("other.example", key, true)).toBe(-3);
+    expect(await verify("other.example", key, false)).toBe(-2);
+  });
+  it("keeps the approved connection key enforced when fresh attestation is unavailable", async () => {
+    const verify = createCertificateVerifier({
+      ...services(),
+      readPolicy: async () => ({ ...policy, tlsSpkiSha256: key }),
+      readStatus: async () => {
+        throw new Error("Proof service unavailable");
+      },
+    });
+    expect(await verify("vm.example", key, true)).toBe(0);
+    expect(await verify("vm.example", "b".repeat(64), true)).toBe(-2);
+    expect(await verify("vm.example", key, false)).toBe(-2);
+  });
+  it("does not fall back to normal TLS when a configured pin is malformed", async () => {
+    const verify = createCertificateVerifier({
+      ...services(),
+      readPolicy: async () => ({ ...policy, tlsSpkiSha256: "invalid" }),
+    });
+    expect(await verify("vm.example", key, true)).toBe(-2);
   });
   it("provides the complete native receipt required by the shared send gate", async () => {
     const gate = new ClientAttestationGate(

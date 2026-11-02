@@ -43,8 +43,31 @@ export function requiresClientAttestation(method: string, input: unknown): boole
   return !stopCommands.has(input.type) && !metadataCommands.has(input.type);
 }
 
+const clientThreadScope = Symbol("client-attestation-thread");
+
+/** Client authorization context only; symbols are never part of the JSON RPC payload. */
+export function withClientAttestationThread<T extends object>(input: T, threadId: string): T {
+  return { ...input, [clientThreadScope]: threadId };
+}
+
 export function clientAttestationThreadId(input: unknown): string | null {
-  if (typeof input !== "object" || input === null || !("threadId" in input)) return null;
-  const threadId = (input as { threadId?: unknown }).threadId;
+  if (typeof input !== "object" || input === null) return null;
+  const scoped = input as {
+    threadId?: unknown;
+    targetThreadId?: unknown;
+    [clientThreadScope]?: unknown;
+  };
+  const threadId = scoped.threadId ?? scoped.targetThreadId ?? scoped[clientThreadScope];
   return typeof threadId === "string" && threadId !== "" ? threadId : null;
+}
+
+export function clientAttestationProviderId(input: unknown): string | undefined {
+  if (typeof input !== "object" || input === null || !("modelSelection" in input)) return undefined;
+  const selection = input.modelSelection;
+  return typeof selection === "object" &&
+    selection !== null &&
+    "instanceId" in selection &&
+    typeof selection.instanceId === "string"
+    ? selection.instanceId
+    : undefined;
 }

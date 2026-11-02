@@ -22,8 +22,8 @@ const checks = [
   ],
   [
     "inference",
-    "Tinfoil",
-    "This phone independently checks Tinfoil's hardware evidence, encryption keys and approved release.",
+    "Inference service",
+    "This phone independently checks the configured inference service's hardware evidence, encryption keys and approved release.",
   ],
   [
     "proxy_workload",
@@ -46,10 +46,14 @@ export function AttestationIndicator({
   status,
   canSend,
   retry,
+  overrideAccepted = false,
+  revokeOverride,
 }: {
   status: AttestationStatus;
   canSend: boolean;
   retry: () => void;
+  overrideAccepted?: boolean;
+  revokeOverride?: () => void;
 }) {
   const [showDetails, setShowDetails] = useState(false);
   const complete = canSend && checks.every(([key]) => status.checks[key]?.state === "verified");
@@ -60,10 +64,10 @@ export function AttestationIndicator({
     : status.phase === "checking"
       ? "Verifying connection"
       : status.phase === "failed"
-        ? "Verification failed. Chat disabled."
+        ? "Verification failed"
         : status.phase === "expired"
-          ? "Verification expired. Chat disabled."
-          : "Verification unavailable. Chat disabled.";
+          ? "Verification expired"
+          : "Verification unavailable";
   return (
     <>
       <Pressable
@@ -103,12 +107,29 @@ export function AttestationIndicator({
                   : status.message}
               </Text>
             </View>
+            {overrideAccepted && (
+              <View className="gap-2">
+                <Text className="text-sm text-foreground-muted">
+                  Unverified sending is allowed for this conversation until you close the app.
+                </Text>
+                <Pressable
+                  accessibilityRole="button"
+                  onPress={revokeOverride}
+                  className="rounded-xl bg-card-alt px-4 py-3"
+                >
+                  <Text className="text-center font-semibold">Require verification</Text>
+                </Pressable>
+              </View>
+            )}
             {checks.map(([key, title, explanation]) => (
               <View key={key} className="gap-1">
                 <Text className="text-base font-semibold">
                   {title}: {status.checks[key]?.state === "verified" ? "Verified" : "Not verified"}
                 </Text>
                 <Text className="text-sm text-foreground-muted">{explanation}</Text>
+                {key === "inference" && status.checks[key]?.detail && (
+                  <Text className="text-sm text-foreground-muted">{status.checks[key].detail}</Text>
+                )}
               </View>
             ))}
             <Text className="text-sm text-foreground-muted">

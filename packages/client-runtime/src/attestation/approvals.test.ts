@@ -2,7 +2,7 @@ import { expect, it } from "vite-plus/test";
 import type { AttestationVersionReview } from "@t3tools/contracts";
 import { createDeviceApprovalController, type DeviceVersionDecisionRecord } from "./approvals.ts";
 
-function setup() {
+function setup(initialDecisions: ReadonlyArray<DeviceVersionDecisionRecord> = []) {
   let current: AttestationVersionReview = {
     id: "native-review",
     origin: "https://vm.example:8446",
@@ -23,7 +23,7 @@ function setup() {
     sourceAvailability: "No public source mapping.",
     expiresAt: 61_000,
   };
-  let values: ReadonlyArray<DeviceVersionDecisionRecord> = [];
+  let values = initialDecisions;
   let authenticate = async () => true;
   let beforeRead = async () => {};
   let id = 0;
@@ -80,15 +80,42 @@ it("requires device authentication and fresh matching evidence before saving the
   );
 });
 
-it("keeps approval absent when the native authentication dialog is cancelled", async () => {
-  const test = setup();
-  test.authenticate(async () => false);
-  const [review] = await test.controller.review(test.origin);
-  await expect(test.controller.decide(review!.id, "approve")).resolves.toBe("cancelled");
-  expect(test.values()).toEqual([]);
-  await expect(test.controller.decide(review!.id, "approve")).rejects.toThrow(
-    "Review this exact version again",
-  );
+it("preserves the previous firmware or inference approval when system authentication is cancelled or unavailable", async () => {
+  for (const component of ["vm-firmware", "inference-release"] as const) {
+    for (const unavailable of [false, true]) {
+      const baseline: DeviceVersionDecisionRecord = {
+        component,
+        targetOrigin: "https://vm.example:8447",
+        binding: "c".repeat(64),
+        version: "100",
+        fingerprint: "a".repeat(component === "vm-firmware" ? 96 : 64),
+        action: "approve",
+        decidedAt: 500,
+      };
+      const test = setup([baseline]);
+      test.replace({
+        ...test.current(),
+        component,
+        fingerprint: "b".repeat(component === "vm-firmware" ? 96 : 64),
+        previousFingerprint: baseline.fingerprint,
+      });
+      let authenticationRequests = 0;
+      test.authenticate(async () => {
+        authenticationRequests++;
+        if (unavailable) throw new Error("System authentication unavailable");
+        return false;
+      });
+      const [review] = await test.controller.review(test.origin);
+      const decision = test.controller.decide(review!.id, "approve");
+      if (unavailable) await expect(decision).rejects.toThrow("System authentication unavailable");
+      else await expect(decision).resolves.toBe("cancelled");
+      expect(authenticationRequests).toBe(1);
+      expect(test.values()).toEqual([baseline]);
+      await expect(test.controller.decide(review!.id, "approve")).rejects.toThrow(
+        "Review this exact version again",
+      );
+    }
+  }
 });
 
 it("does not save approval if its review was closed while authentication was open", async () => {

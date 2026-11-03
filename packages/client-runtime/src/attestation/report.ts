@@ -250,8 +250,44 @@ export function attestationReport(
             : status.phase === "unavailable"
               ? "Verification unavailable"
               : "Verification failed");
+  const reviewComponents: Array<"vm-firmware" | "inference-release"> = [
+    ...(scope.required.includes("hardware") ? ["vm-firmware" as const] : []),
+    ...(scope.required.includes("inference") ? ["inference-release" as const] : []),
+  ];
+  const firmwareApproval =
+    reviewComponents.includes("vm-firmware") &&
+    scopedStatus.checks.hardware?.state === "approval_required";
+  const inferenceApproval =
+    reviewComponents.includes("inference-release") &&
+    scopedStatus.checks.inference?.state === "approval_required";
+  const needsApproval = firmwareApproval || inferenceApproval;
+  const actionableLabel =
+    firmwareApproval && inferenceApproval
+      ? "Updates need approval"
+      : firmwareApproval
+        ? "Private server update needs approval"
+        : inferenceApproval
+          ? `${providerName} update needs approval`
+          : tone === "red"
+            ? "Verification needs attention"
+            : label;
+  const summary = needsApproval
+    ? "A new version is waiting for your approval."
+    : pending
+      ? "Checking your connection…"
+      : tone === "red"
+        ? "We couldn't verify this connection. Check again or open details."
+        : tone === "gray"
+          ? "Verification is not available for this selection."
+          : tone === "yellow"
+            ? "Some checks are not covered. Open details to see which ones."
+            : "The available checks passed.";
   return {
-    label,
+    label: actionableLabel,
+    summary,
+    needsApproval,
+    reviewComponents,
+    actionLabel: needsApproval ? "Review update" : tone === "red" ? "Review issue" : undefined,
     allVerified,
     tone,
     pending,

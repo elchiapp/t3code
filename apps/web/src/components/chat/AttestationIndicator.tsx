@@ -56,7 +56,7 @@ export function AttestationIndicator({
             <button
               type="button"
               className="inline-flex items-center gap-1.5 rounded px-1 py-0.5 text-left text-xs"
-              aria-label={report.label}
+              aria-label={`${report.label}${report.actionLabel ? `. ${report.actionLabel}` : ""}`}
             />
           }
         >
@@ -76,14 +76,24 @@ export function AttestationIndicator({
           <span role="status" aria-live="polite">
             {report.label}
           </span>
+          {report.actionLabel && (
+            <span className="font-medium text-foreground underline underline-offset-2">
+              {report.actionLabel}
+            </span>
+          )}
         </PopoverTrigger>
         <PopoverPopup width="md" align="start">
           <div className="max-h-[min(75vh,42rem)] space-y-4 overflow-y-auto text-xs">
-            <AttestationVersionReview
-              key={status.targets?.vmOrigin ?? status.origin}
-              origin={status.targets?.vmOrigin ?? status.origin}
-              onChanged={onRetry}
-            />
+            <p role="status">{report.summary}</p>
+            {report.reviewComponents.length > 0 && (
+              <AttestationVersionReview
+                key={status.targets?.vmOrigin ?? status.origin}
+                origin={status.targets?.vmOrigin ?? status.origin}
+                onChanged={onRetry}
+                components={report.reviewComponents}
+                needsApproval={report.needsApproval}
+              />
+            )}
             {overrideAccepted && (
               <div className="space-y-2">
                 <p>Unverified sending is allowed for this conversation until you close the app.</p>
@@ -92,58 +102,73 @@ export function AttestationIndicator({
                 </Button>
               </div>
             )}
-            {report.sections.map((section) => (
-              <section key={section.title} className="space-y-2 border-b pb-3 last:border-0">
-                <h3 className="font-semibold">{section.title}</h3>
-                <p className="font-medium">{section.name}</p>
-                {section.origin && section.origin !== section.name && (
-                  <p className="break-all text-muted-foreground">{section.origin}</p>
-                )}
-                <p>{section.summary}</p>
-                {section.route && (
-                  <p className="break-all text-muted-foreground">{section.route}</p>
-                )}
-                <dl className="space-y-3">
-                  {section.rows.map((row) => (
-                    <div key={row.title} className="grid grid-cols-[1fr_auto] gap-x-4 gap-y-1">
-                      <dt>{row.title}</dt>
-                      <dd className="inline-flex items-center gap-1.5 font-medium">
-                        <span
-                          aria-hidden="true"
-                          data-attestation-tone={row.tone}
-                          className={cn(
-                            "size-1.5 shrink-0 rounded-full",
-                            row.tone === "green"
-                              ? "bg-success"
-                              : row.tone === "red"
-                                ? "bg-error"
-                                : row.tone === "gray"
-                                  ? "bg-muted-foreground"
-                                  : "bg-warning",
+            <div className="space-y-1 text-muted-foreground">
+              {report.sections.map((section) => (
+                <p key={section.title}>
+                  <span className="font-medium text-foreground">
+                    {section.title === "Agent environment" ? "Environment" : "AI service"}:
+                  </span>{" "}
+                  {section.name}
+                </p>
+              ))}
+            </div>
+            <details>
+              <summary className="cursor-pointer font-medium">Verification details</summary>
+              <div className="mt-3 space-y-4">
+                {report.sections.map((section) => (
+                  <section key={section.title} className="space-y-2 border-b pb-3 last:border-0">
+                    <h3 className="font-semibold">{section.title}</h3>
+                    <p className="font-medium">{section.name}</p>
+                    {section.origin && section.origin !== section.name && (
+                      <p className="break-all text-muted-foreground">{section.origin}</p>
+                    )}
+                    <p>{section.summary}</p>
+                    {section.route && (
+                      <p className="break-all text-muted-foreground">{section.route}</p>
+                    )}
+                    <dl className="space-y-3">
+                      {section.rows.map((row) => (
+                        <div key={row.title} className="grid grid-cols-[1fr_auto] gap-x-4 gap-y-1">
+                          <dt>{row.title}</dt>
+                          <dd className="inline-flex items-center gap-1.5 font-medium">
+                            <span
+                              aria-hidden="true"
+                              data-attestation-tone={row.tone}
+                              className={cn(
+                                "size-1.5 shrink-0 rounded-full",
+                                row.tone === "green"
+                                  ? "bg-success"
+                                  : row.tone === "red"
+                                    ? "bg-error"
+                                    : row.tone === "gray"
+                                      ? "bg-muted-foreground"
+                                      : "bg-warning",
+                              )}
+                            />
+                            {row.result}
+                          </dd>
+                          <dd className="col-span-2 text-muted-foreground">{row.explanation}</dd>
+                          {row.detail && (
+                            <dd className="col-span-2">
+                              <details>
+                                <summary className="cursor-pointer text-muted-foreground">
+                                  Proof details
+                                </summary>
+                                <p className="mt-1 break-words">{row.detail}</p>
+                              </details>
+                            </dd>
                           )}
-                        />
-                        {row.result}
-                      </dd>
-                      <dd className="col-span-2 text-muted-foreground">{row.explanation}</dd>
-                      {row.detail && (
-                        <dd className="col-span-2">
-                          <details>
-                            <summary className="cursor-pointer text-muted-foreground">
-                              Proof details
-                            </summary>
-                            <p className="mt-1 break-words">{row.detail}</p>
-                          </details>
-                        </dd>
-                      )}
-                    </div>
-                  ))}
-                </dl>
-              </section>
-            ))}
-            <p>
-              Checks run on this device. The VM and its software are trusted. Yellow assumptions are
-              outside the current proof scope; they are not failed checks.
-            </p>
+                        </div>
+                      ))}
+                    </dl>
+                  </section>
+                ))}
+                <p>
+                  Checks run on this device. The VM and its software are trusted. Yellow assumptions
+                  are outside the current proof scope; they are not failed checks.
+                </p>
+              </div>
+            </details>
             <Button size="sm" variant="outline" onClick={onRetry} disabled={report.pending}>
               Check again
             </Button>

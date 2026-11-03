@@ -101,3 +101,23 @@ export async function decideAttestationVersion(decision: AttestationVersionDecis
     pending.delete(decision.reviewId);
   }
 }
+
+/** A refreshed one-use review may replace an expired token only for the same displayed decision. */
+export function sameReviewedVersion(
+  a: AttestationVersionReview,
+  b: AttestationVersionReview,
+): boolean {
+  return (
+    a.origin === b.origin &&
+    a.component === b.component &&
+    a.targetOrigin === b.targetOrigin &&
+    a.binding === b.binding &&
+    a.vendor === b.vendor &&
+    a.version === b.version &&
+    a.fingerprint === b.fingerprint &&
+    a.previousVersion === b.previousVersion &&
+    a.previousFingerprint === b.previousFingerprint &&
+    a.eligible === b.eligible &&
+    a.approvalState === b.approvalState
+  );
+}

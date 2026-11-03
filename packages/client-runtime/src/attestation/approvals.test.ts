@@ -1,3 +1,4 @@
+import { sameReviewedVersion } from "./versions.ts";
 import { expect, it } from "vite-plus/test";
 import type { AttestationVersionReview } from "@t3tools/contracts";
 import { createDeviceApprovalController, type DeviceVersionDecisionRecord } from "./approvals.ts";
@@ -235,4 +236,26 @@ it("records an explicit revocation so a signed-in baseline is not silently trust
       decidedAt: 1_000,
     },
   ]);
+});
+
+it("refreshes an expired review only when the displayed identity and approval baseline match", () => {
+  const review = setup().current();
+  expect(sameReviewedVersion(review, { ...review, id: "fresh-token", expiresAt: 120_000 })).toBe(
+    true,
+  );
+  for (const change of [
+    { origin: "https://other.example" },
+    { targetOrigin: "https://other.example" },
+    { component: "inference-release" as const },
+    { binding: "new-key" },
+    { vendor: "Other" },
+    { version: "201" },
+    { fingerprint: "new-fingerprint" },
+    { previousVersion: "99" },
+    { previousFingerprint: "changed-baseline" },
+    { eligible: false },
+    { approvalState: "approved" as const },
+  ]) {
+    expect(sameReviewedVersion(review, { ...review, ...change })).toBe(false);
+  }
 });

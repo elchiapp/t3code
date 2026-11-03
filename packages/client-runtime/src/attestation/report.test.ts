@@ -60,6 +60,18 @@ describe("composer attestation colors", () => {
         attestationReport(failed, false, "VM", { instanceId: "tinfoil", label: "Tinfoil" }).tone,
       ).toBe("red");
     }
+    const update = {
+      ...full,
+      phase: "failed" as const,
+      checks: { ...full.checks, inference: { state: "approval_required" } },
+    };
+    const report = attestationReport(update, false, "VM", {
+      instanceId: "tinfoil",
+      label: "Tinfoil",
+    });
+    expect(report.label).toBe("Tinfoil update needs approval");
+    expect(report.actionLabel).toBe("Review update");
+    expect(report.needsApproval).toBe(true);
     const offline = { ...full, phase: "failed" as const, checks: {} };
     expect(
       attestationReport(offline, false, "VM", { instanceId: "tinfoil", label: "Tinfoil" }).tone,

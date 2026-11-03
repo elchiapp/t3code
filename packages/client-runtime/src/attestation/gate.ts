@@ -12,6 +12,7 @@ export {
   canReviewAttestationVersions,
   reviewAttestationVersions,
   decideAttestationVersion,
+  sameReviewedVersion,
   registerDeviceVersionOperations,
   canConfigureAttestationAuthentication,
   configureAttestationAuthentication,

@@ -22,6 +22,7 @@ export function VersionReview({ origin, onChanged }: { origin: string; onChanged
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
   const [expanded, setExpanded] = useState<ReadonlySet<string>>(new Set());
+  const [selected, setSelected] = useState<AttestationVersionReview["component"]>("vm-firmware");
   const mounted = useRef(true);
   const current = useRef<ReadonlyArray<AttestationVersionReview>>([]);
   // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- Closing the native review cancels its pending authentication and one-use approval requests.
@@ -109,102 +110,127 @@ export function VersionReview({ origin, onChanged }: { origin: string; onChanged
           {message}
         </Text>
       )}
-      {reviews.map((review) => (
-        <View key={review.id} className="gap-3 rounded-xl border border-border p-3">
-          <Text className="font-semibold">
-            {review.vendor} · {review.title}
-          </Text>
-          <Text className="text-sm">
-            Build {review.version} ·{" "}
-            {review.approvalState === "approved"
-              ? "Approved"
-              : review.approvalState === "rejected"
-                ? "Evidence failed"
-                : review.approvalState === "revoked"
-                  ? "Approval revoked"
-                  : "Approval required"}
-          </Text>
-          <Text className="text-sm">{review.explanation}</Text>
-          <Pressable accessibilityRole="button" onPress={() => toggle(review.id + ":changes")}>
-            <Text className="text-sm font-semibold">View changes</Text>
-          </Pressable>
-          {expanded.has(review.id + ":changes") &&
-            review.changes.map((change) => (
-              <Text key={change} className="text-sm">
-                • {change}
-              </Text>
-            ))}
-          {review.links
-            .filter((link) => ["source", "changes"].includes(link.kind) && safeLink(link.url))
-            .map((link) => (
-              <Pressable
-                key={link.url}
-                accessibilityRole="link"
-                onPress={() => void Linking.openURL(link.url)}
-              >
-                <Text className="text-sm font-semibold">
-                  {link.kind === "source" ? "View source · " : ""}
-                  {link.label}
-                </Text>
-              </Pressable>
-            ))}
-          <Text className="text-sm text-foreground-muted">{review.sourceAvailability}</Text>
-          <Pressable accessibilityRole="button" onPress={() => toggle(review.id + ":proof")}>
-            <Text className="text-sm font-semibold">Proof details</Text>
-          </Pressable>
-          {expanded.has(review.id + ":proof") && (
-            <View className="gap-2">
-              <Text selectable className="text-xs">
-                Target: {review.targetOrigin}
-              </Text>
-              <Text selectable className="text-xs">
-                Approved fingerprint: {review.previousFingerprint ?? "None"}
-              </Text>
-              <Text selectable className="text-xs">
-                Reviewed fingerprint: {review.fingerprint}
-              </Text>
-              <Text selectable className="text-xs">
-                Connection or source identity: {review.binding}
-              </Text>
-              {review.links
-                .filter((link) => ["evidence", "vendor"].includes(link.kind) && safeLink(link.url))
-                .map((link) => (
-                  <Pressable
-                    key={link.url}
-                    accessibilityRole="link"
-                    onPress={() => void Linking.openURL(link.url)}
-                  >
-                    <Text className="text-sm font-semibold">{link.label}</Text>
-                  </Pressable>
-                ))}
-            </View>
-          )}
-          <Text className="text-xs text-foreground-muted">
-            A signature identifies the publisher. It does not prove that the software changes are
-            safe.
-          </Text>
-          {review.approvalState !== "approved" && (
+      {reviews.length > 1 && (
+        <View className="flex-row gap-2">
+          {reviews.map((review) => (
             <Pressable
-              accessibilityRole="button"
-              disabled={busy || !review.eligible}
-              onPress={() => void decide(review, "approve")}
-              className="rounded-xl bg-card-alt px-4 py-3"
-            >
-              <Text className="text-center font-semibold">Approve exact build</Text>
-            </Pressable>
-          )}
-          {review.approvalState === "approved" && (
-            <Pressable
-              accessibilityRole="button"
+              key={review.component}
+              accessibilityRole="tab"
+              accessibilityState={{ selected: selected === review.component }}
               disabled={busy}
-              onPress={() => void decide(review, "revoke")}
-              className="rounded-xl bg-card-alt px-4 py-3"
+              onPress={() => setSelected(review.component)}
+              className="flex-1 rounded-xl border border-border px-3 py-3"
             >
-              <Text className="text-center font-semibold">Revoke approval</Text>
+              <Text className="text-center text-sm font-semibold">
+                {review.vendor} · {review.component === "vm-firmware" ? "VM" : "Inference"}
+              </Text>
             </Pressable>
-          )}
+          ))}
         </View>
-      ))}
+      )}
+      {reviews
+        .filter(
+          (review) =>
+            review === (reviews.find((item) => item.component === selected) ?? reviews[0]),
+        )
+        .map((review) => (
+          <View key={review.id} className="gap-3 rounded-xl border border-border p-3">
+            <Text className="font-semibold">
+              {review.vendor} · {review.title}
+            </Text>
+            <Text className="text-sm">
+              Build {review.version} ·{" "}
+              {review.approvalState === "approved"
+                ? "Approved"
+                : review.approvalState === "rejected"
+                  ? "Evidence failed"
+                  : review.approvalState === "revoked"
+                    ? "Approval revoked"
+                    : "Approval required"}
+            </Text>
+            <Text className="text-sm">{review.explanation}</Text>
+            <Pressable accessibilityRole="button" onPress={() => toggle(review.id + ":changes")}>
+              <Text className="text-sm font-semibold">View changes</Text>
+            </Pressable>
+            {expanded.has(review.id + ":changes") &&
+              review.changes.map((change) => (
+                <Text key={change} className="text-sm">
+                  • {change}
+                </Text>
+              ))}
+            {review.links
+              .filter((link) => ["source", "changes"].includes(link.kind) && safeLink(link.url))
+              .map((link) => (
+                <Pressable
+                  key={link.url}
+                  accessibilityRole="link"
+                  onPress={() => void Linking.openURL(link.url)}
+                >
+                  <Text className="text-sm font-semibold">
+                    {link.kind === "source" ? "View source · " : ""}
+                    {link.label}
+                  </Text>
+                </Pressable>
+              ))}
+            <Text className="text-sm text-foreground-muted">{review.sourceAvailability}</Text>
+            <Pressable accessibilityRole="button" onPress={() => toggle(review.id + ":proof")}>
+              <Text className="text-sm font-semibold">Proof details</Text>
+            </Pressable>
+            {expanded.has(review.id + ":proof") && (
+              <View className="gap-2">
+                <Text selectable className="text-xs">
+                  Target: {review.targetOrigin}
+                </Text>
+                <Text selectable className="text-xs">
+                  Approved fingerprint: {review.previousFingerprint ?? "None"}
+                </Text>
+                <Text selectable className="text-xs">
+                  Reviewed fingerprint: {review.fingerprint}
+                </Text>
+                <Text selectable className="text-xs">
+                  Connection or source identity: {review.binding}
+                </Text>
+                {review.links
+                  .filter(
+                    (link) => ["evidence", "vendor"].includes(link.kind) && safeLink(link.url),
+                  )
+                  .map((link) => (
+                    <Pressable
+                      key={link.url}
+                      accessibilityRole="link"
+                      onPress={() => void Linking.openURL(link.url)}
+                    >
+                      <Text className="text-sm font-semibold">{link.label}</Text>
+                    </Pressable>
+                  ))}
+              </View>
+            )}
+            <Text className="text-xs text-foreground-muted">
+              A signature identifies the publisher. It does not prove that the software changes are
+              safe.
+            </Text>
+            {review.approvalState !== "approved" && (
+              <Pressable
+                accessibilityRole="button"
+                disabled={busy || !review.eligible}
+                onPress={() => void decide(review, "approve")}
+                className="rounded-xl bg-card-alt px-4 py-3"
+              >
+                <Text className="text-center font-semibold">Approve exact build</Text>
+              </Pressable>
+            )}
+            {review.approvalState === "approved" && (
+              <Pressable
+                accessibilityRole="button"
+                disabled={busy}
+                onPress={() => void decide(review, "revoke")}
+                className="rounded-xl bg-card-alt px-4 py-3"
+              >
+                <Text className="text-center font-semibold">Revoke approval</Text>
+              </Pressable>
+            )}
+          </View>
+        ))}
     </View>
   );
 }

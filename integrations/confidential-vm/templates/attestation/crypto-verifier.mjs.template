@@ -25,7 +25,7 @@ for(const [name,key] of [['verifier-core.mjs','coreSha256'],['vcek-bindings.mjs'
 export const policy=validatePolicy(JSON.parse(readFileSync(new URL('verifier/policy.json',root))));
 export const proxyOrigin='{{MODEL_ORIGIN}}';
 const sdk='{{TINFOIL_SDK_ROOT}}';
-if(execFileSync('/usr/bin/git',['-C',sdk,'rev-parse','HEAD'],{encoding:'utf8'}).trim()!==inputs.sdkRevision)throw Error('Pinned Tinfoil SDK revision mismatch');
+if(execFileSync('git',['-C',sdk,'rev-parse','HEAD'],{encoding:'utf8'}).trim()!==inputs.sdkRevision)throw Error('Pinned Tinfoil SDK revision mismatch');
 const sdkRequire=createRequire(join(sdk,'package.json'));
 const {Verifier,assembleAttestationBundle}=await import(pathToFileURL(join(sdk,'packages/verifier/dist/index.js')));
 const {verifySigstoreBundle}=await import(pathToFileURL(join(sdk,'packages/verifier/dist/sigstore.js')));

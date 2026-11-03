@@ -98,11 +98,7 @@ for (const name of await NodeFSP.readdir(NodePath.join(runtime, "verifier")))
 // Runtime source contains public roots only; owner decisions are deliberately not copied.
 await NodeFSP.copyFile(nodeSource, NodePath.join(runtime, "node"));
 await NodeFSP.chmod(NodePath.join(runtime, "node"), 0o755);
-await run(
-  "/usr/bin/codesign",
-  ["--force", "--sign", identity, "--options", "runtime", NodePath.join(runtime, "node")],
-  { timeout: 30000 },
-);
+await run("/usr/bin/codesign", ["--verify", "--strict", NodePath.join(runtime, "node")]);
 const sdkRequire = NodeModule.createRequire(NodePath.join(sdk, "package.json"));
 const { rolldown } = await import(
   NodeURL.pathToFileURL(NodePath.join(sdk, "node_modules/rolldown/dist/index.mjs"))

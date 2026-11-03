@@ -125,6 +125,49 @@ describe("client attestation gate", () => {
     expect(gate.hasOverride(origin, "thread-1")).toBe(false);
   });
 
+  it("does not request consent for partial coverage without a failed available check", async () => {
+    for (const missing of ["hardware", "inference", "proxy_workload"]) {
+      const partial: AttestationStatus = {
+        ...good(),
+        phase: missing === "proxy_workload" ? "verified" : "unavailable",
+        targets: {
+          vmOrigin: origin,
+          proxyOrigin: "https://host.example:8447",
+          inferenceProviderIds: ["tinfoil"],
+        },
+        checks: { ...good().checks, [missing]: { state: "not_configured" } },
+      };
+      const gate = make(async () => partial);
+      let confirmations = 0;
+      gate.setOverrideConfirmation(async () => {
+        confirmations++;
+        return false;
+      });
+      expect((await gate.authorizeWithOverride(origin, "partial")).allowed, missing).toBe(true);
+      expect(confirmations).toBe(0);
+      expect(gate.hasOverride(origin, "partial")).toBe(false);
+    }
+  });
+  it("waits for configured provider discovery rather than treating cold startup as absent support", async () => {
+    const local = "http://127.0.0.1:3773";
+    const proof = Promise.withResolvers<AttestationStatus>();
+    const gate = make(() => proof.promise);
+    const sending = gate.authorizeWithOverride(local, "cold", "tinfoil");
+    expect(gate.canProceed(local, "tinfoil")).toBe(false);
+    proof.resolve({
+      ...good(),
+      origin: local,
+      phase: "failed",
+      targets: {
+        vmOrigin: origin,
+        proxyOrigin: "https://host.example:8447",
+        inferenceProviderIds: ["tinfoil"],
+      },
+      checks: { ...good().checks, hardware: { state: "approval_required" } },
+    });
+    expect((await sending).allowed).toBe(false);
+  });
+
   it("does not allow conversation consent to authorize an unapproved TEE build", async () => {
     for (const component of ["hardware", "inference"] as const) {
       const changed: AttestationStatus = {

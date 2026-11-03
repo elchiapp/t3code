@@ -2,7 +2,6 @@ import type { AttestationStatus } from "@t3tools/contracts";
 import { useEffect, useState } from "react";
 import {
   clientAttestation,
-  requiresVersionApproval,
   attestationReport,
   type AttestationProvider,
 } from "@t3tools/client-runtime/attestation";
@@ -38,7 +37,14 @@ export function AttestationIndicator({
     [status.origin],
   );
   const report = attestationReport(status, canSend, environmentLabel, provider);
-  const state = report.allVerified ? "verified" : canSend ? "partial" : status.phase;
+  const state =
+    report.tone === "green"
+      ? "verified"
+      : report.tone === "yellow"
+        ? "partial"
+        : report.tone === "gray"
+          ? "unavailable"
+          : "failed";
   return (
     <div
       className="flex min-h-6 items-center px-1 text-xs text-muted-foreground"
@@ -58,12 +64,12 @@ export function AttestationIndicator({
             aria-hidden="true"
             className={cn(
               "size-1.5 shrink-0 rounded-full",
-              report.allVerified
+              report.tone === "green"
                 ? "bg-success"
-                : report.neutral
-                  ? "bg-muted-foreground"
-                  : canSend || report.pending || requiresVersionApproval(status)
-                    ? "bg-warning"
+                : report.tone === "yellow"
+                  ? "bg-warning"
+                  : report.tone === "gray"
+                    ? "bg-muted-foreground"
                     : "bg-error",
             )}
           />
@@ -111,7 +117,9 @@ export function AttestationIndicator({
                               ? "bg-success"
                               : row.tone === "red"
                                 ? "bg-error"
-                                : "bg-warning",
+                                : row.tone === "gray"
+                                  ? "bg-muted-foreground"
+                                  : "bg-warning",
                           )}
                         />
                         {row.result}

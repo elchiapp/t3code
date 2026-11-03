@@ -19,7 +19,6 @@ export function useOriginAttestation(
   baseUrl: string | null,
   threadId: string | null = null,
   instanceId?: string,
-  observeOnly = false,
 ) {
   let origin = "";
   try {
@@ -27,11 +26,7 @@ export function useOriginAttestation(
   } catch {}
   const subscribe = (listener: () => void) => {
     if (origin && threadId) clientAttestation.setInferenceProvider(origin, threadId, instanceId);
-    return origin
-      ? observeOnly
-        ? clientAttestation.observe(origin, listener)
-        : clientAttestation.subscribe(origin, listener)
-      : () => {};
+    return origin ? clientAttestation.subscribe(origin, listener) : () => {};
   };
   const snapshot = () => (origin ? clientAttestation.get(origin, instanceId) : noEnvironment);
   const status = useSyncExternalStore(subscribe, snapshot, () => noEnvironment);

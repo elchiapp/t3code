@@ -4,7 +4,6 @@ import { Pressable, ScrollView, View } from "react-native";
 import type { AttestationStatus } from "@t3tools/contracts";
 import {
   clientAttestation,
-  requiresVersionApproval,
   attestationReport,
   type AttestationProvider,
 } from "@t3tools/client-runtime/attestation";
@@ -51,12 +50,12 @@ export function AttestationIndicator({
         <Text
           accessibilityLiveRegion="polite"
           className={
-            report.allVerified
+            report.tone === "green"
               ? "text-xs text-adaptive-emerald-700-300"
-              : report.neutral
-                ? "text-xs text-foreground-muted"
-                : canSend || report.pending || requiresVersionApproval(status)
-                  ? "text-xs text-warning-foreground"
+              : report.tone === "yellow"
+                ? "text-xs text-warning-foreground"
+                : report.tone === "gray"
+                  ? "text-xs text-foreground-muted"
                   : "text-xs text-danger-foreground"
           }
         >
@@ -113,7 +112,9 @@ export function AttestationIndicator({
                             ? "size-1.5 rounded-full bg-adaptive-emerald-700-300"
                             : row.tone === "red"
                               ? "size-1.5 rounded-full bg-danger-foreground"
-                              : "size-1.5 rounded-full bg-warning-foreground"
+                              : row.tone === "gray"
+                                ? "size-1.5 rounded-full bg-foreground-muted"
+                                : "size-1.5 rounded-full bg-warning-foreground"
                         }
                       />
                       <Text className="flex-1 text-sm font-semibold">

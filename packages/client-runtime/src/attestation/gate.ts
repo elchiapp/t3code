@@ -1,3 +1,9 @@
+import {
+  attestationScope,
+  failedAttestation,
+  missingAttestation as absent,
+  localAttestationOrigin as localOrigin,
+} from "./scope.ts";
 import type { AttestationRequest, AttestationStatus, DesktopBridge } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 export { withClientAttestationThread } from "./commands.ts";
@@ -23,39 +29,11 @@ const REQUIRED_CHECKS = [
 const MAX_LEASE_MS = 60_000;
 
 export function requiresVersionApproval(status: AttestationStatus): boolean {
-  const inference = status.checks.inference?.state;
-  const environmentNeedsHardware = !status.targets || status.origin === status.targets.vmOrigin;
-  const usesProxy = inference !== "not_offered" && inference !== "not_configured";
-  return (
-    inference === "approval_required" ||
-    (status.checks.hardware?.state === "approval_required" &&
-      (environmentNeedsHardware || usesProxy))
+  return attestationScope(status).required.some(
+    (key) =>
+      (key === "hardware" || key === "inference") &&
+      status.checks[key]?.state === "approval_required",
   );
-}
-
-const absent = (state?: string) => state === "not_offered" || state === "not_configured";
-const localOrigin = (origin: string) => {
-  try {
-    return ["127.0.0.1", "localhost", "[::1]"].includes(new URL(origin).hostname);
-  } catch {
-    return false;
-  }
-};
-
-export function unattestedReason(status: AttestationStatus): string | undefined {
-  if (
-    status.phase === "checking" &&
-    !status.targets &&
-    status.checks.inference?.state !== "not_offered"
-  )
-    return undefined;
-  if (status.checks.inference?.state === "not_offered")
-    return "The selected provider does not offer TEE attestation.";
-  if (status.checks.inference?.state === "not_configured")
-    return "Attestation is not configured for the selected provider.";
-  if (absent(status.checks.environment_connection?.state))
-    return "Attestation is not configured for this environment.";
-  return undefined;
 }
 
 const protectedTarget = (status: AttestationStatus) =>
@@ -188,14 +166,23 @@ export class ClientAttestationGate {
     if (cached) return cached;
     const directCloud = instanceId === "codex" || instanceId === "claudeAgent";
     const configured = status.targets?.inferenceProviderIds.includes(instanceId) === true;
+    const configurationKnown =
+      !!status.targets ||
+      status.phase === "verified" ||
+      Object.keys(status.checks).some((key) => key.startsWith("inference:")) ||
+      status.checks.environment_connection?.state === "not_configured" ||
+      status.checks.inference?.state === "not_configured";
     const inference = status.checks[`inference:${instanceId}`] ?? {
-      state: configured
-        ? "unavailable"
-        : directCloud
-          ? "not_offered"
-          : status.checks.configuration?.state === "failed"
-            ? "failed"
-            : "not_configured",
+      state:
+        configured || (!configurationKnown && !directCloud)
+          ? status.phase === "checking"
+            ? "checking"
+            : "unavailable"
+          : directCloud
+            ? "not_offered"
+            : status.checks.configuration?.state === "failed"
+              ? "failed"
+              : "not_configured",
       detail: configured
         ? "Attestation is configured for this provider, but its verification is unavailable."
         : directCloud
@@ -219,7 +206,12 @@ export class ClientAttestationGate {
 
   get(origin: string, instanceId?: string): AttestationStatus {
     const entry = this.entry(origin);
-    if (entry.status.phase === "verified" && !this.canSend(origin)) {
+    if (
+      entry.status.phase === "verified" &&
+      (entry.status.expiresAt === null ||
+        this.now() >= entry.status.expiresAt ||
+        this.monotonic() >= entry.deadline)
+    ) {
       entry.status = {
         ...entry.status,
         phase: "expired",
@@ -234,6 +226,7 @@ export class ClientAttestationGate {
     const status = this.providerStatus(entry.status, instanceId);
     return (
       status.phase === "verified" &&
+      !failedAttestation(status) &&
       status.origin === origin &&
       status.expiresAt !== null &&
       this.now() < status.expiresAt &&
@@ -243,22 +236,12 @@ export class ClientAttestationGate {
   }
 
   canProceed(origin: string, instanceId?: string): boolean {
-    if (this.canSend(origin, instanceId)) return true;
     const entry = this.entry(origin);
     const status = this.providerStatus(entry.status, instanceId);
-    if (!unattestedReason(status) || requiresVersionApproval(status)) return false;
-    if (
-      status.checks.configuration?.state === "failed" &&
-      !(localOrigin(origin) && status.checks.inference?.state === "not_offered")
-    )
-      return false;
-    const platformRequired =
-      !localOrigin(origin) && !absent(status.checks.environment_connection?.state);
-    const inferenceRequired = !absent(status.checks.inference?.state);
-    const required = [
-      ...(platformRequired ? ["hardware", "tls_key_commitment", "environment_connection"] : []),
-      ...(inferenceRequired ? ["hardware", "tls_key_commitment", "inference"] : []),
-    ];
+    if (failedAttestation(status)) return false;
+    const required = attestationScope(status).required.filter(
+      (key) => !absent(status.checks[key]?.state),
+    );
     if (required.length === 0) return true;
     return (
       status.expiresAt !== null &&
@@ -408,7 +391,10 @@ export class ClientAttestationGate {
       (threadId ? this.threadProviders.get(JSON.stringify([origin, threadId])) : undefined);
     const initial = this.get(origin, provider);
     if (requiresVersionApproval(initial)) return this.versionApprovalBlocked(origin, initial);
-    if (this.canProceed(origin, provider) && unattestedReason(initial) && !protectedTarget(initial))
+    if (
+      this.canProceed(origin, provider) &&
+      attestationScope(initial).required.every((key) => absent(initial.checks[key]?.state))
+    )
       return { status: initial, allowed: true, requiresOverride: false };
     if (threadId && this.hasOverride(origin, threadId, provider)) {
       if (protectedTarget(initial)) await this.refresh(origin, true);
@@ -429,9 +415,10 @@ export class ClientAttestationGate {
     else await this.refresh(origin, false);
     const refreshed = this.get(origin, provider);
     if (requiresVersionApproval(refreshed)) return this.versionApprovalBlocked(origin, refreshed);
-    if (this.canProceed(origin, provider) && unattestedReason(refreshed))
+    if (this.canProceed(origin, provider))
       return { status: refreshed, allowed: true, requiresOverride: false };
     if (
+      failedAttestation(refreshed) &&
       !this.canSend(origin, provider) &&
       threadId !== null &&
       threadId !== "" &&
@@ -475,9 +462,9 @@ export class ClientAttestationGate {
     const status = this.get(origin, provider);
     if (requiresVersionApproval(status)) return this.versionApprovalBlocked(origin, status);
     const allowed =
-      this.canSend(origin, provider) ||
+      this.canProceed(origin, provider) ||
       (threadId !== null && threadId !== "" && this.hasOverride(origin, threadId, provider));
-    return { status, allowed, requiresOverride: !allowed };
+    return { status, allowed, requiresOverride: !allowed && failedAttestation(status) };
   }
 
   private schedule(origin: string, entry: Entry) {
@@ -493,15 +480,6 @@ export class ClientAttestationGate {
       Effect.sleep(delay).pipe(Effect.andThen(Effect.promise(() => this.refresh(origin, false)))),
       { signal: timer.signal },
     ).catch(() => {});
-  }
-
-  observe(origin: string, listener: () => void): () => void {
-    const entry = this.entry(origin);
-    entry.listeners.add(listener);
-    return () => {
-      entry.listeners.delete(listener);
-      if (entry.listeners.size === 0) entry.timer?.abort();
-    };
   }
 
   subscribe(origin: string, listener: () => void): () => void {

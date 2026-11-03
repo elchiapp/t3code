@@ -1,3 +1,4 @@
+import { attestationScope, failedAttestation, missingAttestation } from "./scope.ts";
 import type { AttestationStatus } from "@t3tools/contracts";
 
 export interface AttestationProvider {
@@ -8,7 +9,7 @@ export interface AttestationProvider {
 interface Row {
   readonly title: string;
   readonly result: string;
-  readonly tone: "green" | "yellow" | "red";
+  readonly tone: "green" | "yellow" | "red" | "gray";
   readonly explanation: string;
   readonly detail?: string | undefined;
 }
@@ -23,6 +24,10 @@ function result(state?: string): string {
       return "Not offered";
     case "not_configured":
       return "Not configured";
+    case "expired":
+      return "Expired";
+    case "unavailable":
+      return "Not verified";
     case "checking":
       return "Checking";
     case "approval_required":
@@ -88,7 +93,16 @@ export function attestationReport(
       title,
       explanation,
       result: label,
-      tone: label === "Verified" ? "green" : state === "failed" ? "red" : "yellow",
+      tone:
+        label === "Verified"
+          ? "green"
+          : assumed
+            ? "yellow"
+            : ["failed", "expired", "unavailable", "approval_required"].includes(state ?? "")
+              ? "red"
+              : missingAttestation(state)
+                ? "gray"
+                : "yellow",
       detail: status.checks[key]?.detail,
     };
   };
@@ -141,7 +155,7 @@ export function attestationReport(
         {
           title: "TEE attestation",
           result: "Not offered",
-          tone: "yellow",
+          tone: "gray",
           explanation:
             "This connection does not offer TEE attestation. This is not a verification failure.",
         },
@@ -151,7 +165,7 @@ export function attestationReport(
           {
             title: "TEE attestation",
             result: "Not configured",
-            tone: "yellow",
+            tone: "gray",
             explanation:
               "No trusted verifier is configured for this provider. This does not establish whether its service uses a TEE.",
           },
@@ -202,6 +216,26 @@ export function attestationReport(
               : `${providerName}: ${inferenceResult.toLowerCase()}`
       }`
     : undefined;
+  const scopedStatus: AttestationStatus = covered
+    ? status
+    : {
+        ...status,
+        checks: {
+          ...status.checks,
+          inference: { state: directService ? "not_offered" : "not_configured" },
+        },
+      };
+  const scope = attestationScope(scopedStatus);
+  const active = scope.required.filter(
+    (key) => !missingAttestation(scopedStatus.checks[key]?.state),
+  );
+  const tone = failedAttestation(scopedStatus)
+    ? "red"
+    : allVerified
+      ? "green"
+      : active.length > 0
+        ? "yellow"
+        : "gray";
   const pending = status.phase === "checking";
   const label =
     contextualLabel ??
@@ -219,8 +253,8 @@ export function attestationReport(
   return {
     label,
     allVerified,
+    tone,
     pending,
-    neutral: status.phase !== "failed" && (Boolean(directService) || !covered),
     sections: [
       {
         title: "Agent environment",

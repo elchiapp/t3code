@@ -5,12 +5,6 @@ export function useAttestation(
   environmentId: EnvironmentId,
   threadId: ThreadId | null,
   instanceId?: string,
-  observeOnly = false,
 ) {
-  return useOriginAttestation(
-    useEnvironmentHttpBaseUrl(environmentId),
-    threadId,
-    instanceId,
-    observeOnly,
-  );
+  return useOriginAttestation(useEnvironmentHttpBaseUrl(environmentId), threadId, instanceId);
 }

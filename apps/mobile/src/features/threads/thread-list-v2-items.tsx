@@ -1,5 +1,3 @@
-import { unattestedReason } from "@t3tools/client-runtime/attestation";
-import { useAttestation } from "../attestation/useAttestation";
 import * as Dialog from "../../components/ui/Dialog";
 import type { ThreadRowProviderInstance } from "./thread-provider-instance";
 import {
@@ -676,13 +674,6 @@ export const ThreadListV2Row = memo(function ThreadListV2Row(props: {
     };
   }, [thread, props.providers]);
 
-  const { status: attestationStatus } = useAttestation(
-    thread.environmentId,
-    null,
-    thread.runtime?.providerInstanceId ?? thread.modelSelection.instanceId,
-    true,
-  );
-  const attestationWarning = unattestedReason(attestationStatus);
   const providerInstance = props.providerInstance;
   const pr = useThreadPr(thread);
   const prBadgeLabel = pr ? resolveThreadPrBadgeAction(pr).accessibilityLabel : null;
@@ -705,7 +696,7 @@ export const ThreadListV2Row = memo(function ThreadListV2Row(props: {
       : workingLabel) ?? (isUnread ? DONE_STATUS_LABEL : undefined);
   const recede = shouldRecedeThreadRow({ status, selected });
   const isRegeneratingTitle = thread.titleRegeneration != null;
-  const rowAccessibilityLabel = `${thread.title}${attestationWarning ? `, ${attestationWarning}` : ""}${props.hasQueuedMessages ? ", messages queued to send" : ""}${isRegeneratingTitle ? ", regenerating title" : ""}`;
+  const rowAccessibilityLabel = `${thread.title}${props.hasQueuedMessages ? ", messages queued to send" : ""}${isRegeneratingTitle ? ", regenerating title" : ""}`;
   const timeLabel = props.timeLabel;
 
   const visitThread = useAtomCommand(threadEnvironment.visit, { reportFailure: false });
@@ -1090,7 +1081,6 @@ export const ThreadListV2Row = memo(function ThreadListV2Row(props: {
           numberOfLines={2}
         >
           {thread.title}
-          {attestationWarning ? <Text className="text-xs text-warning-foreground"> ⚠︎</Text> : null}
         </Text>
         <View className="flex-row items-center gap-1.5" style={{ minHeight: titleLineHeight }}>
           {props.hasQueuedMessages ? <QueuedMessageIcon selected={selected} /> : null}
@@ -1379,9 +1369,6 @@ export const ThreadListV2Row = memo(function ThreadListV2Row(props: {
               numberOfLines={1}
             >
               {thread.title}
-              {attestationWarning ? (
-                <Text className="text-xs text-warning-foreground"> ⚠︎</Text>
-              ) : null}
             </Text>
             {props.searchMatch ? (
               <ThreadSearchMatchExcerpt

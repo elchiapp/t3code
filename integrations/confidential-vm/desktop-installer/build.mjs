@@ -19,6 +19,8 @@ const release = "0.1.6-turing.10-air1";
 if (NodeFS.existsSync(output)) throw Error("Choose a fresh build directory.");
 await NodeFSP.mkdir(output, { recursive: true });
 const source = (await run("git", ["-C", repo, "rev-parse", "HEAD"])).stdout.trim();
+if ((await run("git", ["-C", repo, "status", "--porcelain"])).stdout.trim())
+  throw Error("Commit the installer recipe before building.");
 const lock = JSON.parse(
   await NodeFSP.readFile(
     NodePath.join(repo, "integrations/confidential-vm/source-lock.json"),
@@ -234,7 +236,7 @@ await NodeFSP.writeFile(
     {
       release,
       source,
-      runtimeSource: "f341f0ee0",
+      runtimeSource: source,
       sdkRevision: lock.sdk_revision,
       installer: app,
       appAsarSha256,

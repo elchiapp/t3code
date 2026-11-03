@@ -1,0 +1,13 @@
+# Private Mac installer
+
+This installer packages the complete T3 Attested app and a source-pinned verification runtime for an Apple silicon Mac. Git, Python and Xcode are build prerequisites only. The receiving Mac needs Tailscale for its private VM connection.
+
+Open **Install T3 Attested.app** from the disk image. It installs into the current user's `Applications` folder, creates an owner-only verification runtime and registers its own user LaunchAgent. It does not require administrator access. Close any existing T3 app first. The app then uses normal environment pairing; no account, pairing token, chat database, API/private key or device decision is imported.
+
+The package contains the owner's public endpoint/key configuration. Keep this personal installer private. Initial firmware/release fingerprints are configuration, not permission to trust later builds. New measured builds require native system authentication in T3. The installer never approves them. The app signature is a development signature; notarization and receiver-device acceptance are separate checks. No Gatekeeper, quarantine or certificate protection is disabled.
+
+The builder accepts the app, clean pinned SDK checkout, rendered verifier source, public client policy, Node executable, fresh output directory and exact signing identity as positional arguments. It removes the sender's app data-home override and re-signs the app. It bundles the SDK into JavaScript, records runtime file hashes and ships the required license notices. It excludes legacy owner-approval files. The receiver uses the default `~/.t3-attested` home; an existing custom-home installation is preserved and rejected for automatic replacement.
+
+Install rollback retains the old app, service definition and code if service startup fails. Existing histories, accounts and `attestation-versions.json` are preserved. The legacy `io.elchiapp.t3-attestation-air` job is retired only when recognized and idle; unrelated services on port3420 cause a safe stop.
+
+Run `node --test integrations/confidential-vm/desktop-installer/install.node-test.mjs` for path, tamper, privacy and rollback checks. Verify signatures, the relocated runtime on genuine evidence, and a fresh install on the receiving Mac before claiming full acceptance. This recipe does not change the T3 agent backend or its wire protocol. Other operating systems retain their existing adapters; this disk-image installer is macOS-specific.

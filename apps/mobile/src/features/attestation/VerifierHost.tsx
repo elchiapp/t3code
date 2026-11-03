@@ -11,6 +11,7 @@ import {
   unavailableAttestation,
   createDeviceApprovalController,
   registerDeviceVersionOperations,
+  createProofCollector,
 } from "@t3tools/client-runtime/attestation";
 import type { DeviceVersionOperations } from "@t3tools/client-runtime/attestation";
 import * as Schema from "effect/Schema";
@@ -38,18 +39,21 @@ interface WorkerReply {
 
 const decodeFirmwareTargets = Schema.decodeUnknownSync(Schema.Array(Schema.String));
 const decodeVersionReview = Schema.decodeUnknownSync(AttestationVersionReview);
+const collectHardwareResponse = createProofCollector();
 
 async function collectProof(proofOrigin: string, input: unknown) {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), 25000);
   try {
-    const result = await fetch(proofOrigin + "/proof", {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify(input),
-      redirect: "error",
-      signal: controller.signal,
-    });
+    const result = await collectHardwareResponse(() =>
+      fetch(proofOrigin + "/proof", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(input),
+        redirect: "error",
+        signal: controller.signal,
+      }),
+    );
     if (!result.ok)
       throw new Error(
         result.status === 429

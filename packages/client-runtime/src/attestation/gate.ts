@@ -12,6 +12,7 @@ export {
   type DeviceVersionOperations,
 } from "./versions.ts";
 export { createDeviceApprovalController, type DeviceVersionDecisionRecord } from "./approvals.ts";
+export { createProofCollector } from "./proofCollector.mjs";
 
 const REQUIRED_CHECKS = [
   "hardware",

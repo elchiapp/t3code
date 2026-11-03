@@ -83,10 +83,10 @@
       "template_sha256": "5e310b35d2b0fba201457c73f7092084cfbbba3704a25e2ec6ee20fa8cc8b62f"
     },
     "templates/attestation/crypto-verifier.mjs.template": {
-      "template_sha256": "06726fddc0db88847adbda8d394c1f3fabe4177056fd1290326c7f5a637b2895"
+      "template_sha256": "dfbc05f235b78347e8daccd331bd0720a089cea99e3659969ac14c6dc6962181"
     },
     "templates/attestation/collect-evidence.mjs.template": {
-      "template_sha256": "20893be1d1706d3a9d2ddb7a3dde175d3d20303b0bedd7c47b93edea428c0cdc"
+      "template_sha256": "fbb1278ed31b2f7e656a7c391fdefe764d00b811a74d2859571728e06a274cf7"
     },
     "templates/attestation/main.mjs.template": {
       "template_sha256": "2e61865bdb9eb3859fcc76f81ec23416d699bd77963109b2fe9663fe991063bf"
@@ -217,5 +217,6 @@
     "templates/attestation/verifier/inference-review.mjs.template": {
       "template_sha256": "37cfc4942b6dc243e232656c782896bb6f1df800a25ab033429900db9ba32513"
     }
-  }
+  },
+  "shared_proof_collector_sha256": "3da3d5e7677c36ae65dcec9478ba05ddc8339874ac94198620269d77a92d75f9"
 }

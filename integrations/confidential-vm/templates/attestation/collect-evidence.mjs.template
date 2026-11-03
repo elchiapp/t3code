@@ -1,13 +1,15 @@
 import {newChallenge,hardwareProof,inferenceProof,boundedJson} from './crypto-verifier.mjs';
 import {peerKey,commitment,MODEL_ORIGIN,PROOF_ORIGIN} from './endpoint-binding.mjs';
+import {createProofCollector} from './proof-collector.mjs';
+const collectHardwareResponse=createProofCollector();
 
 export async function collectHardwareInput(initial){
   initial=initial??await newChallenge();
   const tlsSpkiSha256=await peerKey();
   const challenge={...initial,nonce:commitment(initial.nonce,tlsSpkiSha256)};
-  const evidence=await boundedJson(await fetch(PROOF_ORIGIN+'/proof',{method:'POST',headers:{'content-type':'application/json'},
+  const evidence=await boundedJson(await collectHardwareResponse(()=>fetch(PROOF_ORIGIN+'/proof',{method:'POST',headers:{'content-type':'application/json'},
     body:JSON.stringify({version:1,nonce:initial.nonce,tlsSpkiSha256,modelOrigin:MODEL_ORIGIN,challenge}),
-    redirect:'error',signal:AbortSignal.timeout(20000)}));
+    redirect:'error',signal:AbortSignal.timeout(20000)})));
   if(evidence.version!==1||evidence.modelOrigin!==MODEL_ORIGIN||evidence.tlsSpkiSha256!==tlsSpkiSha256)
     throw Error('The endpoint commitment differs from the selected TLS key');
   return {challenge,evidence,tlsSpkiSha256};

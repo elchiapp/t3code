@@ -24,6 +24,9 @@ def render(config, output, *, test_only=False):
     if hashlib.sha256(node.read_bytes()).hexdigest() != config["node_sha256"]:
         raise ValueError("Node does not match the reviewed runtime pin")
     source_lock = json.loads((ROOT / "source-lock.json").read_text())
+    shared_collector = ROOT.parents[1] / 'packages/client-runtime/src/attestation/proofCollector.mjs'
+    if hashlib.sha256(shared_collector.read_bytes()).hexdigest() != source_lock['shared_proof_collector_sha256']:
+        raise ValueError('The shared hardware collector differs from its reviewed source pin')
     for name, item in source_lock["files"].items():
         if hashlib.sha256((ROOT / name).read_bytes()).hexdigest() != item["template_sha256"]:
             raise ValueError("Source template changed; review and refresh its source lock first")
@@ -70,7 +73,10 @@ def render(config, output, *, test_only=False):
         target.write_text(text)
         target.chmod(0o600)
     verifier = output / "attestation/verifier"
+    (output / 'attestation/proof-collector.mjs').write_bytes(shared_collector.read_bytes())
+    (output / 'attestation/proof-collector.mjs').chmod(0o600)
     inputs = json.loads((verifier / "inputs.json").read_text())
+    inputs['proofCollectorSha256'] = hashlib.sha256(shared_collector.read_bytes()).hexdigest()
     for name, key in [("verifier-core.mjs", "coreSha256"), ("vcek-bindings.mjs", "vcekBindingSha256"), ("policy.json", "publicPolicySha256"),
                       ("google-firmware.mjs", "googleFirmwareSha256"), ("firmware-review.mjs", "firmwareReviewSha256"),
                       ("inference-review.mjs", "inferenceReviewSha256"),

@@ -17,6 +17,8 @@ import {createInferenceReviewer} from './verifier/inference-review.mjs';
 const root=new URL('.',import.meta.url);
 const hash=bytes=>createHash('sha256').update(bytes).digest('hex');
 const inputs=JSON.parse(readFileSync(new URL('verifier/inputs.json',root)));
+if(hash(readFileSync(new URL('proof-collector.mjs',root)))!==inputs.proofCollectorSha256)
+  throw Error('The local hardware collector does not match its source pin');
 for(const [name,key] of [['verifier-core.mjs','coreSha256'],['vcek-bindings.mjs','vcekBindingSha256'],['policy.json','publicPolicySha256'],
   ['google-firmware.mjs','googleFirmwareSha256'],['firmware-review.mjs','firmwareReviewSha256'],
   ['inference-review.mjs','inferenceReviewSha256'],['version-decisions.mjs','versionDecisionsSha256']]){

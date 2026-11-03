@@ -1,4 +1,11 @@
-import type { AttestationRequest, AttestationStatus } from "@t3tools/contracts";
+import {
+  AttestationVersionReview,
+  DeviceVersionDecisionRecord,
+  type AttestationRequest,
+  type AttestationStatus,
+  type AttestationVersionDecision,
+} from "@t3tools/contracts";
+import { createDeviceApprovalController } from "@t3tools/client-runtime/attestation";
 import * as Context from "effect/Context";
 import * as Crypto from "effect/Crypto";
 import * as Effect from "effect/Effect";
@@ -15,9 +22,26 @@ import * as NodeTls from "node:tls";
 import * as NodeCrypto from "node:crypto";
 import * as Electron from "electron";
 import * as DesktopEnvironment from "../app/DesktopEnvironment.ts";
-import { createCertificateVerifier, createDesktopVerifier } from "./desktopVerifier.ts";
+import {
+  createCertificateVerifier,
+  createDesktopVerifier,
+  decodeDevicePolicy,
+} from "./desktopVerifier.ts";
+import { createDesktopVersionStore } from "./desktopVersionStore.ts";
+import { authenticateDevice, configureLinuxApprovalPolicy } from "./deviceAuthentication.ts";
+import * as ElectronWindow from "../electron/ElectronWindow.ts";
+import * as Channels from "../ipc/channels.ts";
 
 const decodePolicyText = Schema.decodeEffect(Schema.fromJsonString(Schema.Unknown));
+const reviewSnapshot = Schema.decodeUnknownSync(
+  Schema.Struct({
+    reviews: Schema.Array(AttestationVersionReview),
+    decisions: Schema.Array(DeviceVersionDecisionRecord),
+  }),
+);
+const decisionSnapshot = Schema.decodeUnknownSync(
+  Schema.Struct({ decisions: Schema.Array(DeviceVersionDecisionRecord) }),
+);
 
 function peerPublicKey(origin: string): Promise<Uint8Array> {
   const target = new URL(origin);
@@ -46,6 +70,13 @@ export class DesktopAttestation extends Context.Service<
   DesktopAttestation,
   {
     readonly get: (request: AttestationRequest) => Effect.Effect<AttestationStatus>;
+    readonly reviewVersions: (
+      request: AttestationRequest,
+    ) => Effect.Effect<ReadonlyArray<AttestationVersionReview>>;
+    readonly decideVersion: (
+      request: AttestationVersionDecision,
+    ) => Effect.Effect<"approved" | "revoked" | "cancelled">;
+    readonly configureAuthentication: Effect.Effect<boolean>;
     readonly installConnectionGate: Effect.Effect<void>;
   }
 >()("@t3tools/desktop/attestation/DesktopAttestation") {}
@@ -61,6 +92,7 @@ const make = Effect.gen(function* () {
   const files = yield* FileSystem.FileSystem;
   const crypto = yield* Crypto.Crypto;
   const http = yield* HttpClient.HttpClient;
+  const windows = yield* ElectronWindow.ElectronWindow;
   const policyPath = environment.path.join(environment.baseDir, "attestation-client.json");
   const services = {
     readPolicy: () =>
@@ -69,8 +101,9 @@ const make = Effect.gen(function* () {
           const info = yield* files.stat(policyPath);
           if (
             info.type !== "File" ||
-            Option.getOrUndefined(info.uid) !== NodeOS.userInfo().uid ||
-            (info.mode & 0o077) !== 0 ||
+            (environment.platform !== "win32" &&
+              (Option.getOrUndefined(info.uid) !== NodeOS.userInfo().uid ||
+                (info.mode & 0o077) !== 0)) ||
             info.size > ByteSize.bytes(32_768)
           )
             return yield* new DeviceVerifierError({ message: "Untrusted device policy" });
@@ -109,6 +142,107 @@ const make = Effect.gen(function* () {
   };
   const verify = createDesktopVerifier(services);
   const verifyCertificate = createCertificateVerifier(services);
+  const newId = () => runPromise(crypto.randomUUIDv4().pipe(Effect.orDie));
+  const store = createDesktopVersionStore(
+    environment.path.join(environment.appDataDirectory, "T3 Attested", "attestation-versions.json"),
+    newId,
+    { platform: environment.platform, uid: NodeOS.userInfo().uid },
+  );
+  const activeAuthentications = new Map<string, AbortController>();
+  const localPolicy = async () => {
+    const policy = decodeDevicePolicy(await services.readPolicy());
+    const verifier = new URL(policy.verifierOrigin);
+    if (
+      verifier.protocol !== "http:" ||
+      verifier.hostname !== "127.0.0.1" ||
+      verifier.pathname !== "/" ||
+      verifier.username ||
+      verifier.password ||
+      verifier.search ||
+      verifier.hash ||
+      !/^[a-f0-9]{64}$/.test(policy.tlsSpkiSha256 ?? "")
+    )
+      throw new Error("The trusted device verifier is not configured.");
+    return { ...policy, verifierOrigin: verifier.origin };
+  };
+  const publicJson = (url: string) =>
+    runPromise(
+      http.get(url).pipe(
+        Effect.flatMap((response) =>
+          Effect.gen(function* () {
+            if (response.status !== 200)
+              return yield* new DeviceVerifierError({ message: "Version review is unavailable." });
+            return yield* response.json;
+          }),
+        ),
+        Effect.provideService(HttpIncomingMessage.MaxBodySize, ByteSize.kibibytes(128)),
+        Effect.timeout("45 seconds"),
+      ),
+    );
+  const invalidate = () => {
+    void runPromise(windows.main).then((window) => {
+      if (Option.isSome(window) && !window.value.isDestroyed())
+        window.value.webContents.send(Channels.ATTESTATION_VERSIONS_CHANGED_CHANNEL);
+    });
+  };
+  const approvals = createDeviceApprovalController(
+    {
+      review: async (origin) => {
+        const policy = await localPolicy();
+        if (!policy.allowedEnvironmentOrigins.includes(origin))
+          throw new Error("This environment has no trusted review policy.");
+        const snapshot = reviewSnapshot(
+          await publicJson(
+            policy.verifierOrigin + "/versions/review?origin=" + encodeURIComponent(origin),
+          ),
+        );
+        for (const review of snapshot.reviews) {
+          if (
+            review.origin !== origin ||
+            (review.component === "vm-firmware" &&
+              (review.targetOrigin !== policy.modelOrigin ||
+                (review.eligible && review.binding !== policy.tlsSpkiSha256))) ||
+            (review.component === "inference-release" &&
+              review.targetOrigin !== policy.inferenceOrigin)
+          )
+            throw new Error("The review belongs to another target or connection key.");
+        }
+        return snapshot.reviews;
+      },
+      authenticate: async (reason, review) => {
+        const window = await runPromise(windows.main);
+        if (Option.isNone(window) || window.value.isDestroyed()) return false;
+        const signal = new AbortController();
+        activeAuthentications.set(review.id, signal);
+        const file =
+          environment.platform === "win32" ? "t3-attestation-auth.exe" : "t3-attestation-auth";
+        const helperPath = environment.isPackaged
+          ? environment.path.join(environment.resourcesPath, "attestation-auth", file)
+          : environment.path.join(environment.rootDir, ".t3", "attestation-auth", file);
+        try {
+          return await authenticateDevice(reason, {
+            platform: environment.platform,
+            helperPath,
+            windowHandle: window.value.getNativeWindowHandle(),
+            signal: signal.signal,
+          });
+        } finally {
+          activeAuthentications.delete(review.id);
+        }
+      },
+      read: async () => {
+        const stored = await store.read();
+        if (stored !== null) return stored;
+        const policy = await localPolicy();
+        return decisionSnapshot(await publicJson(policy.verifierOrigin + "/versions/decisions"))
+          .decisions;
+      },
+      write: store.write,
+      invalidate,
+    },
+    Date.now,
+    newId,
+  );
   return DesktopAttestation.of({
     installConnectionGate: Effect.sync(() => {
       Electron.session.defaultSession.setCertificateVerifyProc((request, callback) => {
@@ -127,6 +261,44 @@ const make = Effect.gen(function* () {
     }),
     get: Effect.fn("DesktopAttestation.get")((request: AttestationRequest) =>
       Effect.promise(() => verify(request)),
+    ),
+    reviewVersions: Effect.fn("DesktopAttestation.reviewVersions")((request: AttestationRequest) =>
+      Effect.promise(() => approvals.review(request.origin)),
+    ),
+    configureAuthentication: Effect.promise(async () => {
+      if (environment.platform !== "linux") return false;
+      const window = await runPromise(windows.main);
+      if (Option.isNone(window) || window.value.isDestroyed()) return false;
+      const choice = await Electron.dialog.showMessageBox(window.value, {
+        type: "question",
+        title: "Set up T3 device authentication",
+        buttons: ["Cancel", "Install authentication rule"],
+        defaultId: 0,
+        cancelId: 0,
+        message: "Install the system rule used to authenticate build approvals?",
+        detail:
+          "Linux will ask for administrator authentication once to install this Polkit rule. Each later approval authenticates your own account. This rule does not give T3 administrator access.",
+      });
+      if (choice.response !== 1) return false;
+      const policyPath = environment.isPackaged
+        ? environment.path.join(
+            environment.resourcesPath,
+            "attestation-auth",
+            "io.elchiapp.t3attested.approve-version.policy",
+          )
+        : environment.path.join(
+            environment.rootDir,
+            "native",
+            "attestation-auth",
+            "io.elchiapp.t3attested.approve-version.policy",
+          );
+      return configureLinuxApprovalPolicy(policyPath);
+    }),
+    decideVersion: Effect.fn("DesktopAttestation.decideVersion")(
+      (request: AttestationVersionDecision) => {
+        if (request.action === "cancel") activeAuthentications.get(request.reviewId)?.abort();
+        return Effect.promise(() => approvals.decide(request.reviewId, request.action));
+      },
     ),
   });
 });

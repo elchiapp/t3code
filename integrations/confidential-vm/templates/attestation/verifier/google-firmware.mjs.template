@@ -1,0 +1,110 @@
+export const GOOGLE_FIRMWARE_ROOT_SHA256 = 'e876bc6978bf4f3da445f98a0a82363c8c0bae5a1fc033c6df65846a6cb0f18c';
+
+const hex = bytes => Array.from(bytes, value => value.toString(16).padStart(2, '0')).join('');
+const equal = (a,b) => a.length === b.length && a.every((value,index) => value === b[index]);
+const fail = reason => { throw Error(reason); };
+
+function protobuf(bytes) {
+  const result = new Map();
+  let position = 0, count = 0;
+  const integer = () => {
+    let value = 0n, shift = 0n;
+    for (let i=0;i<10;i++) {
+      if (position >= bytes.length) fail('Truncated Google firmware evidence.');
+      const byte = bytes[position++];
+      value |= BigInt(byte & 127) << shift;
+      if (byte < 128) {
+        if (value > BigInt(Number.MAX_SAFE_INTEGER)) fail('Unsupported firmware integer.');
+        return Number(value);
+      }
+      shift += 7n;
+    }
+    fail('Invalid Google firmware evidence.');
+  };
+  while (position < bytes.length) {
+    if (++count > 4096) fail('Google firmware evidence is too complex.');
+    const key = integer(), tag = Math.floor(key / 8), wire = key % 8;
+    if (!tag) fail('Invalid Google firmware field.');
+    let value;
+    if (wire === 0) value = integer();
+    else {
+      const length = wire === 2 ? integer() : wire === 1 ? 8 : wire === 5 ? 4 : -1;
+      if (length < 0 || length > bytes.length-position) fail('Invalid Google firmware field length.');
+      value = bytes.slice(position,position+length);position+=length;
+    }
+    const values = result.get(tag) ?? [];
+    values.push(value);result.set(tag,values);
+  }
+  return result;
+}
+
+function single(fields,tag,type) {
+  const values = fields.get(tag);
+  if (values?.length !== 1 || (type === 'bytes' ? !(values[0] instanceof Uint8Array) : typeof values[0] !== 'number'))
+    fail('A required Google firmware field is missing or ambiguous.');
+  return values[0];
+}
+
+// This is only a parsing hint; verifyGoogleFirmware must authenticate the same bytes.
+export function googleFirmwareCpuHint(endorsement,measurementHex) {
+  if (endorsement.length > 131072 || !/^[a-f0-9]{96}$/.test(measurementHex)) fail('Invalid firmware lookup.');
+  const golden = protobuf(single(protobuf(endorsement),1,'bytes'));
+  const snp = protobuf(single(golden,7,'bytes'));
+  const matches = (snp.get(2) ?? []).map(raw => protobuf(raw)).filter(entry =>
+    hex(single(entry,2,'bytes')) === measurementHex);
+  if (matches.length !== 1) fail('The firmware launch configuration is ambiguous or missing.');
+  return single(matches[0],1,'number');
+}
+
+// The caller must separately verify a fresh AMD report and bind it to the selected VM key.
+export function createGoogleFirmwareVerifier({X509Certificate}) {
+  return async function verifyGoogleFirmware({endorsement,rootCertificate,measurementHex,launchVcpus,minSvn,expectedFamilyId,now}) {
+    if (!/^[a-f0-9]{96}$/.test(measurementHex) || !Number.isSafeInteger(launchVcpus) || launchVcpus < 1 ||
+        !Number.isSafeInteger(minSvn) || minSvn < 0 || !Number.isFinite(now))
+      fail('Invalid trusted firmware policy.');
+    const blob = Uint8Array.from(endorsement), root = Uint8Array.from(rootCertificate);
+    if (blob.length > 131072 || root.length > 8192) fail('Google firmware evidence exceeds the size limit.');
+    if (hex(new Uint8Array(await crypto.subtle.digest('SHA-256',root))) !== GOOGLE_FIRMWARE_ROOT_SHA256)
+      fail('The Google firmware root certificate is not approved.');
+    const outer = protobuf(blob);
+    const payload = single(outer,1,'bytes'), signature = single(outer,2,'bytes');
+    const golden = protobuf(payload);
+    const signer = X509Certificate.parse(single(golden,4,'bytes'));
+    const anchor = X509Certificate.parse(root);
+    const date = new Date(now);
+    if (!anchor.isCA || !anchor.validForDate(date) || !signer.validForDate(date) || signer.isCA ||
+        !signer.extKeyUsage?.digitalSignature || !equal(signer.issuer,anchor.subject) ||
+        !(await anchor.verify()) || !(await signer.verify(anchor)))
+      fail('The Google firmware signing certificate is not valid.');
+    const key = await signer.getPublicKeyObj('sha256',true);
+    if (!(await crypto.subtle.verify({name:'RSA-PSS',saltLength:32},key,signature,payload)))
+      fail('The Google firmware endorsement signature is not valid.');
+    const snp = protobuf(single(golden,7,'bytes'));
+    const securityVersion = single(snp,1,'number');
+    if (securityVersion < minSvn) fail('The firmware security version is below the approved minimum.');
+    const familyId = hex(single(snp,3,'bytes'));
+    if (familyId.length !== 32 || (expectedFamilyId && familyId !== expectedFamilyId))
+      fail('The firmware belongs to a different VM family.');
+    const measurements = new Map();
+    for (const raw of snp.get(2) ?? []) {
+      if (!(raw instanceof Uint8Array)) fail('Invalid signed firmware measurements.');
+      const entry = protobuf(raw), cpus = single(entry,1,'number'), digest = single(entry,2,'bytes');
+      if (measurements.has(cpus) || digest.length !== 48) fail('Ambiguous signed firmware measurements.');
+      measurements.set(cpus,hex(digest));
+    }
+    if (measurements.get(launchVcpus) !== measurementHex)
+      fail('The Google endorsement does not match this launch measurement and CPU count.');
+    const firmwareDigest = hex(single(golden,5,'bytes'));
+    const imageId = hex(single(snp,4,'bytes'));
+    if (firmwareDigest.length !== 96 || imageId.length !== 32) fail('Invalid Google firmware identity.');
+    return {
+      vendor:'Google', build:String(single(golden,2,'number')), measurementHex,
+      securityVersion, launchVcpus, familyId, imageId, firmwareDigest,
+      rootSha256:GOOGLE_FIRMWARE_ROOT_SHA256,
+      evidenceUrl:`https://storage.googleapis.com/gce_tcb_integrity/ovmf_x64_csm/sevsnp/${measurementHex}.binarypb`,
+      sourceUrl:null,
+      sourceAvailability:'This signed endorsement does not identify an exact public source revision or detailed change log.',
+      vendorUrl:'https://docs.cloud.google.com/confidential-computing/confidential-vm/docs/verify-firmware',
+    };
+  };
+}

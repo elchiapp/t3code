@@ -23,7 +23,8 @@ with tempfile.TemporaryDirectory(prefix='proof-', dir=scratch) as temporary:
     render(config, output, test_only=True)
     environment = {**os.environ, 'TMPDIR': str(temporary)}
     subprocess.run([str(node), '--test', 'gate.node-test.mjs', 'endpoint-binding.node-test.mjs',
-                    'vm-proof-server.node-test.mjs', 'release-approvals.node-test.mjs'],
+                    'vm-proof-server.node-test.mjs', 'release-approvals.node-test.mjs',
+                    'verifier/google-firmware.node-test.mjs', 'device-approval-store.node-test.mjs'],
                    cwd=output / 'attestation', env=environment, check=True)
     subprocess.run(['python3', '-m', 'unittest', 'test_snp_collect.py'],
                    cwd=output / 'attestation', env=environment, check=True)

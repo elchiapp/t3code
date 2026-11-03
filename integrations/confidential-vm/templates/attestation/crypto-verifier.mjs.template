@@ -8,11 +8,18 @@ import {createChallenge,expectedReportData,verifySnpEvidence,validatePolicy,chec
 import {createVcekBindingVerifier} from './verifier/vcek-bindings.mjs';
 import {classifyInferenceRelease} from './verifier/inference-release-policy.mjs';
 import {readApprovals} from './release-approvals.mjs';
+import {readDeviceDecisions} from './device-approval-store.mjs';
+import {inferenceDecision,versionReceiptAllowed} from './verifier/version-decisions.mjs';
+import {createGoogleFirmwareVerifier,googleFirmwareCpuHint} from './verifier/google-firmware.mjs';
+import {createFirmwareReviewer} from './verifier/firmware-review.mjs';
+import {createInferenceReviewer} from './verifier/inference-review.mjs';
 
 const root=new URL('.',import.meta.url);
 const hash=bytes=>createHash('sha256').update(bytes).digest('hex');
 const inputs=JSON.parse(readFileSync(new URL('verifier/inputs.json',root)));
-for(const [name,key] of [['verifier-core.mjs','coreSha256'],['vcek-bindings.mjs','vcekBindingSha256'],['policy.json','publicPolicySha256']]){
+for(const [name,key] of [['verifier-core.mjs','coreSha256'],['vcek-bindings.mjs','vcekBindingSha256'],['policy.json','publicPolicySha256'],
+  ['google-firmware.mjs','googleFirmwareSha256'],['firmware-review.mjs','firmwareReviewSha256'],
+  ['inference-review.mjs','inferenceReviewSha256'],['version-decisions.mjs','versionDecisionsSha256']]){
   if(hash(readFileSync(new URL('verifier/'+name,root)))!==inputs[key])throw Error('Local verifier input hash mismatch: '+name);
 }
 export const policy=validatePolicy(JSON.parse(readFileSync(new URL('verifier/policy.json',root))));
@@ -20,20 +27,76 @@ export const proxyOrigin='{{MODEL_ORIGIN}}';
 const sdk='{{TINFOIL_SDK_ROOT}}';
 if(execFileSync('/usr/bin/git',['-C',sdk,'rev-parse','HEAD'],{encoding:'utf8'}).trim()!==inputs.sdkRevision)throw Error('Pinned Tinfoil SDK revision mismatch');
 const sdkRequire=createRequire(join(sdk,'package.json'));
-const {Verifier}=await import(pathToFileURL(join(sdk,'packages/verifier/dist/index.js')));
+const {Verifier,assembleAttestationBundle}=await import(pathToFileURL(join(sdk,'packages/verifier/dist/index.js')));
+const {verifySigstoreBundle}=await import(pathToFileURL(join(sdk,'packages/verifier/dist/sigstore.js')));
 const {CertificateChain}=await import(pathToFileURL(join(sdk,'packages/verifier/dist/sev/cert-chain.js')));
 const {X509Certificate}=await import(pathToFileURL(sdkRequire.resolve('@freedomofpress/sigstore-browser')));
 const verifyVcekBindings=createVcekBindingVerifier({CertificateChain,X509Certificate});
+const metadataCache=new Map();
+async function publicBytes(url,limit){
+  const response=await fetch(url,{redirect:'error',signal:AbortSignal.timeout(10000)});
+  if(!response.ok||!response.body)throw Error('Public firmware evidence is unavailable');
+  const reader=response.body.getReader();let size=0;const chunks=[];
+  try{for(;;){const{done,value}=await reader.read();if(done)break;size+=value.byteLength;if(size>limit)throw Error('Public firmware evidence exceeds the size limit');chunks.push(value);}}
+  finally{await reader.cancel().catch(()=>{});}
+  return new Uint8Array(Buffer.concat(chunks));
+}
+export async function loadGoogleEvidence(measurement){
+  if(!/^[a-f0-9]{96}$/.test(measurement))throw Error('Invalid firmware fingerprint');
+  if(!metadataCache.has(measurement)){
+    while(metadataCache.size>=32)metadataCache.delete(metadataCache.keys().next().value);
+    const pending=Promise.all([
+      publicBytes(`https://storage.googleapis.com/gce_tcb_integrity/ovmf_x64_csm/sevsnp/${measurement}.binarypb`,131072),
+      publicBytes('https://pki.goog/cloud_integrity/GCE-cc-tcb-root_1.crt',8192),
+    ]).then(([endorsement,rootCertificate])=>({endorsement,rootCertificate}));
+    metadataCache.set(measurement,pending);pending.catch(()=>metadataCache.delete(measurement));
+  }
+  return metadataCache.get(measurement);
+}
+export function currentVersionDecisions(){
+  const stored=readDeviceDecisions();if(stored!==null)return stored;
+  const latest=readApprovals().sort((a,b)=>Date.parse(b.approvedAt)-Date.parse(a.approvedAt))[0];
+  return latest?[{component:'inference-release',targetOrigin:latest.endpoint,binding:policy.tinfoil.configRepo,
+    version:latest.tag,fingerprint:latest.digest,action:'approve',decidedAt:Date.parse(latest.approvedAt)}]:[];
+}
+const reviewFirmware=createFirmwareReviewer({verifySnpEvidence,expectedReportData,checkChallengeShape,verifyVcekBindings,
+  verifyGoogleFirmware:createGoogleFirmwareVerifier({X509Certificate}),googleFirmwareCpuHint,loadGoogleEvidence});
+const reviewInference=createInferenceReviewer({Verifier,assembleAttestationBundle,verifySigstoreBundle,X509Certificate,
+  classifyInferenceRelease,inferenceDecision,loadProvenance:async(repo,digest)=>{
+    if(repo!==policy.tinfoil.configRepo||!/^[a-f0-9]{64}$/.test(digest))throw Error('Invalid release provenance target');
+    const value=await boundedJson(await fetch(`https://github-proxy.tinfoil.sh/repos/${repo}/attestations/sha256:${digest}`,
+      {redirect:'error',signal:AbortSignal.timeout(10000)}),2*1024*1024);
+    if(!value.attestations?.[0]?.bundle)throw Error('Published provenance is unavailable');
+    return value.attestations[0].bundle;
+  }});
+export async function inferenceReview(origin){
+  const stored=readDeviceDecisions();
+  return reviewInference({policy,origin,decisions:currentVersionDecisions(),
+    legacyApprovals:stored===null?readApprovals():[],now:Date.now()});
+}
+export async function firmwareReview(challenge,evidence,{origin='{{VM_T3_ORIGIN}}',tlsSpkiSha256=evidence.tlsSpkiSha256}={}){
+  return reviewFirmware({policy,challenge,evidence,modelOrigin:proxyOrigin,tlsSpkiSha256,origin,
+    decisions:currentVersionDecisions(),now:Date.now()});
+}
+export function receiptPolicyCurrent(receipt){
+  try{
+    return versionReceiptAllowed(currentVersionDecisions(),{modelOrigin:proxyOrigin,
+      firmwareBaseline:policy.hardware.snp.measurementHex,inferenceOrigin:policy.tinfoil.enclaveOrigin,
+      inferenceRepo:policy.tinfoil.configRepo,inferenceBaseline:policy.tinfoil.approvedReleases},receipt);
+  }catch{return false;}
+}
 
 export async function newChallenge(){
   const {privateKey,...challenge}=await createChallenge({policy,origin:policy.evidenceOrigin});
   return challenge;
 }
 export async function hardwareProof(challenge,bundle,now=Date.now()){
-  checkChallengeShape(challenge,policy,now);
-  const expected=await expectedReportData(challenge);
-  const result=await verifySnpEvidence(bundle.snp,{policy,expectedReportDataBytes:expected,now,verifyVcekBindings});
-  return {state:'verified',product:result.productLine,measurement:result.measurementHex,currentTcb:result.currentTcbHex,scope:'Hardware and firmware only; proxy software and key custody are not measured.'};
+  const result=await reviewFirmware({policy,challenge,evidence:{version:1,modelOrigin:proxyOrigin,
+    tlsSpkiSha256:bundle.tlsSpkiSha256,snp:bundle.snp},modelOrigin:proxyOrigin,
+    tlsSpkiSha256:bundle.tlsSpkiSha256,origin:'{{VM_T3_ORIGIN}}',decisions:currentVersionDecisions(),now});
+  if(!result.approved)throw Error('VM firmware requires an exact-build approval in T3');
+  return {state:'verified',product:result.hardware.productLine,measurement:result.hardware.measurementHex,
+    currentTcb:result.hardware.currentTcbHex,scope:'Hardware and approved boot firmware only; proxy software and key custody are not measured.'};
 }
 export async function boundedJson(response,maxBytes=512*1024){
   if(!response.ok)throw Error('Evidence endpoint returned HTTP '+response.status);
@@ -54,6 +117,11 @@ export async function inferenceProof({ownerApprovals=readApprovals()}={}){
   try{await Promise.race([verifier.verify(),new Promise((_,reject)=>{timer=setTimeout(()=>reject(Error('Independent Tinfoil verification timed out')),35000);})]);}
   finally{clearTimeout(timer);}
   const document=verifier.getVerificationDocument();
-  const result=classifyInferenceRelease(document,policy,policy.tinfoil.enclaveOrigin,ownerApprovals);
+  const decision=inferenceDecision(currentVersionDecisions(),{endpoint:policy.tinfoil.enclaveOrigin,
+    repo:policy.tinfoil.configRepo,tag:document?.releaseTag,digest:document?.releaseDigest});
+  const selected=decision==='approve'?[{endpoint:policy.tinfoil.enclaveOrigin,tag:document.releaseTag,digest:document.releaseDigest}]:
+    (readDeviceDecisions()===null?ownerApprovals:[]);
+  const result=classifyInferenceRelease(document,policy,policy.tinfoil.enclaveOrigin,selected);
+  if(decision==='revoke'||decision==='unapproved')result.status='release_not_approved';
   return {state:result.status==='verified'?'verified':'approval_required',releaseTag:result.releaseTag,releaseDigest:result.releaseDigest,approvalSource:result.approvalSource??(result.status==='verified'?'pinned_policy':undefined),scope:'Independent enclave and public-key verification; not proof of mutable VM proxy software.'};
 }

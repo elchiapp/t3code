@@ -1,0 +1,46 @@
+export function validateVersionDecisions(input) {
+  if (!input || input.version !== 1 || !Array.isArray(input.decisions) || input.decisions.length > 32)
+    throw Error('Invalid device version decisions.');
+  const scopes = new Set();
+  return input.decisions.map(value => {
+    if (!value || !['vm-firmware','inference-release'].includes(value.component) ||
+        !['approve','revoke'].includes(value.action) ||
+        typeof value.binding !== 'string' || !value.binding.length || value.binding.length > 512 ||
+        !/^[a-zA-Z0-9][a-zA-Z0-9._+-]{0,63}$/.test(value.version ?? '') ||
+        !Number.isSafeInteger(value.decidedAt) || value.decidedAt <= 0 ||
+        !(value.component === 'vm-firmware' ? /^[a-f0-9]{96}$/ : /^[a-f0-9]{64}$/).test(value.fingerprint ?? ''))
+      throw Error('Invalid device version decision.');
+    const target = new URL(value.targetOrigin);
+    if (target.protocol !== 'https:' || target.origin !== value.targetOrigin || target.username || target.password)
+      throw Error('A version approval must name an exact HTTPS target.');
+    const key = JSON.stringify([value.component,value.targetOrigin,value.binding]);
+    if (scopes.has(key)) throw Error('Ambiguous device version decisions.');
+    scopes.add(key);
+    return {component:value.component,targetOrigin:value.targetOrigin,binding:value.binding,
+      version:value.version,fingerprint:value.fingerprint,action:value.action,decidedAt:value.decidedAt};
+  });
+}
+
+export function inferenceDecision(decisions,{endpoint,repo,tag,digest}) {
+  const selected=decisions.find(value=>value.component==='inference-release' && value.targetOrigin===endpoint && value.binding===repo);
+  if(!selected)return null;
+  const matches=selected.version===tag && selected.fingerprint===digest;
+  return selected.action==='approve' ? (matches?'approve':'unapproved') : (matches?'revoke':null);
+}
+
+export function firmwareDecision(decisions,{targetOrigin,binding,measurement,baseline}) {
+  const selected=decisions.find(value=>value.component==='vm-firmware' && value.targetOrigin===targetOrigin && value.binding===binding);
+  if(selected?.action==='approve')return selected.fingerprint===measurement;
+  if(selected?.action==='revoke' && selected.fingerprint===measurement)return false;
+  return baseline===measurement;
+}
+
+export function versionReceiptAllowed(decisions,{modelOrigin,firmwareBaseline,inferenceOrigin,inferenceRepo,inferenceBaseline},receipt) {
+  if(!firmwareDecision(decisions,{targetOrigin:modelOrigin,binding:receipt.tlsSpkiSha256,
+    measurement:receipt.checks?.hardware?.measurement,baseline:firmwareBaseline}))return false;
+  const release=receipt.checks?.inference;
+  const decision=inferenceDecision(decisions,{endpoint:inferenceOrigin,repo:inferenceRepo,
+    tag:release?.releaseTag,digest:release?.releaseDigest});
+  if(decision!==null)return decision==='approve';
+  return inferenceBaseline.some(value=>value.tag===release?.releaseTag && value.digest===release?.releaseDigest);
+}

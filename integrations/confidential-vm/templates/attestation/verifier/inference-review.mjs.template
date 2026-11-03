@@ -1,0 +1,61 @@
+const hex64 = value => /^[a-f0-9]{64}$/.test(value ?? '');
+const tag = value => /^v[0-9]+\.[0-9]+\.[0-9]+$/.test(value ?? '');
+
+function sourceCommit(bundle,repo,X509Certificate) {
+  const encoded=bundle?.verificationMaterial?.certificate?.rawBytes;
+  if(typeof encoded!=='string'||encoded.length>32768)return null;
+  const cert=X509Certificate.parse(Uint8Array.from(atob(encoded),value=>value.charCodeAt(0)));
+  const repository=cert.extSourceRepositoryURI?.sourceRepositoryURI?.replace(/^https:\/\/github\.com\//,'').replace(/\.git$/,'') ??
+    cert.extGitHubWorkflowRepository?.workflowRepository;
+  const sha=cert.extSourceRepositoryDigest?.sourceRepositoryDigest ?? cert.extGitHubWorkflowSHA?.workflowSHA;
+  return repository?.toLowerCase()===repo.toLowerCase() && /^[a-f0-9]{40}$/.test(sha ?? '') ? sha : null;
+}
+
+export function createInferenceReviewer({Verifier,assembleAttestationBundle,verifySigstoreBundle,X509Certificate,classifyInferenceRelease,inferenceDecision,loadProvenance}) {
+  return async function reviewInference({policy,origin,decisions=[],legacyApprovals=[],now}) {
+    const endpoint=policy.tinfoil.enclaveOrigin,repo=policy.tinfoil.configRepo;
+    if(!/^[a-zA-Z0-9_.-]+\/[a-zA-Z0-9_.-]+$/.test(repo))throw Error('The trusted source repository is invalid.');
+    const bundle=await assembleAttestationBundle(new URL(endpoint).hostname,repo);
+    const verifier=new Verifier({serverURL:endpoint,configRepo:repo});
+    await verifier.verifyBundle(bundle);
+    const document=verifier.getVerificationDocument();
+    const decision=inferenceDecision(decisions,{endpoint,repo,tag:document?.releaseTag,digest:document?.releaseDigest});
+    const selected=decisions.find(value=>value.component==='inference-release'&&value.targetOrigin===endpoint&&value.binding===repo);
+    const owner=decision==='approve'?[{endpoint,tag:document.releaseTag,digest:document.releaseDigest}]:legacyApprovals;
+    const classification=classifyInferenceRelease(document,policy,endpoint,owner);
+    const approved=!['revoke','unapproved'].includes(decision)&&classification.status==='verified';
+    const baseline=selected?.action==='approve'?{tag:selected.version,digest:selected.fingerprint}:
+      legacyApprovals[legacyApprovals.length-1] ?? policy.tinfoil.approvedReleases[policy.tinfoil.approvedReleases.length-1];
+    const currentSha=sourceCommit(bundle.sigstoreBundle,repo,X509Certificate);
+    let previousSha=null;
+    if(baseline&&tag(baseline.tag)&&hex64(baseline.digest)) {
+      if(baseline.digest===document.releaseDigest)previousSha=currentSha;
+      else try {
+        const provenance=await loadProvenance(repo,baseline.digest);
+        await verifySigstoreBundle(provenance,baseline.digest,repo,baseline.tag);
+        previousSha=sourceCommit(provenance,repo,X509Certificate);
+      } catch {}
+    }
+    const repository='https://github.com/'+repo;
+    const links=[{kind:'changes',label:'Release notes and artifacts',url:repository+'/releases/tag/'+encodeURIComponent(document.releaseTag)},
+      {kind:'evidence',label:'Published release fingerprint',url:repository+'/releases/download/'+encodeURIComponent(document.releaseTag)+'/tinfoil.hash'}];
+    if(currentSha)links.push({kind:'source',label:'Verified release configuration source',url:repository+'/tree/'+currentSha});
+    else links.push({kind:'source',label:'Release configuration source (tag)',url:repository+'/tree/'+encodeURIComponent(document.releaseTag)});
+    if(currentSha&&previousSha&&currentSha!==previousSha)
+      links.push({kind:'changes',label:'Compare verified source revisions',url:repository+'/compare/'+previousSha+'...'+currentSha});
+    return {document,approved,review:{
+      id:'',origin,component:'inference-release',targetOrigin:endpoint,binding:repo,vendor:'Tinfoil',
+      title:'Inference software release',version:document.releaseTag,fingerprint:document.releaseDigest,
+      previousVersion:baseline?.tag ?? null,previousFingerprint:baseline?.digest ?? null,eligible:true,
+      approvalState:approved?'approved':decision==='revoke'?'revoked':'required',
+      explanation:'Hardware attestation, release provenance, measurements and attested keys passed. Approval accepts this exact published release; it does not approve later versions.',
+      changes:[`Release: ${baseline?.tag ?? 'not approved'} → ${document.releaseTag}`,
+        'The VM environment has its own separate hardware and firmware checks.',
+        'Published source and signatures support review; they do not prove that every software change is safe.'],
+      links,sourceAvailability:currentSha
+        ? `The signed build certificate identifies release configuration commit ${currentSha}.`
+        : 'A verified release tag is available, but its signing certificate does not provide an exact configuration source commit.',
+      expiresAt:now+30*60_000,
+    }};
+  };
+}

@@ -125,3 +125,8 @@ export const TAKE_LEGACY_LOCAL_STORAGE_CHANNEL = "desktop:take-legacy-local-stor
 export const COMPLETE_LEGACY_LOCAL_STORAGE_CHANNEL = "desktop:complete-legacy-local-storage";
 
 export const GET_ATTESTATION_STATUS_CHANNEL = "desktop:get-attestation-status";
+export const GET_ATTESTATION_VERSION_REVIEWS_CHANNEL = "desktop:get-attestation-version-reviews";
+export const DECIDE_ATTESTATION_VERSION_CHANNEL = "desktop:decide-attestation-version";
+export const ATTESTATION_VERSIONS_CHANGED_CHANNEL = "desktop:attestation-versions-changed";
+export const CONFIGURE_ATTESTATION_AUTHENTICATION_CHANNEL =
+  "desktop:configure-attestation-authentication";

@@ -20,7 +20,7 @@ export function renderStatus(status){
   const rows=Object.entries(titles).map(([id,title])=>`<tr><td>${title}</td><td>${escape(status.checks?.[id]?.state??'not configured')}</td><td>${escape(status.checks?.[id]?.detail??status.checks?.[id]?.scope??'No accepted proof for this check.')}</td></tr>`).join('');
   return `<!doctype html><meta charset="utf-8"><meta name="viewport" content="width=device-width"><title>T3 Attestation</title><style>body{font:16px system-ui;max-width:1000px;margin:40px auto;padding:20px;color:#14212b;background:#f7f9fc}h1{font-size:30px}table{width:100%;border-collapse:collapse;background:white}td{border:1px solid #ccd4df;padding:14px;vertical-align:top}p{line-height:1.5}.state{padding:18px;background:#fff0cf;border-radius:8px}button{padding:10px 18px;margin-top:20px}</style><h1>T3 Attestation</h1><p class="state">${summary}</p><p>The verifier runs on this laptop. It does not accept a server’s verified flag as proof.</p><table>${rows}</table><p>${escape(status.error??'')}</p><form method="post" action="/refresh"><button>Check again</button></form><p>Hardware signatures and a key commitment do not prove which proxy software runs or that its private key cannot be copied.</p>`;
 }
-export function createGateServer({gate,forward,metadata,modelOrigin,port=3420,maxBytes=30*1024*1024}){
+export function createGateServer({gate,forward,metadata,reviewVersions,versionDecisions,modelOrigin,port=3420,maxBytes=30*1024*1024}){
   let modelRequestsReceived=0;
   const allowedOrigins=new Set([`http://127.0.0.1:${port}`,`http://localhost:${port}`,'http://127.0.0.1:3219','t3code://app']);
   return http.createServer({requestTimeout:300000,headersTimeout:15000},async(req,res)=>{
@@ -30,6 +30,13 @@ export function createGateServer({gate,forward,metadata,modelOrigin,port=3420,ma
     if(req.headers.origin&&!allowedOrigins.has(req.headers.origin)){json(403,{error:{message:'Origin is not authorized'}});return;}
     try{
       if(req.method==='GET'&&req.url==='/status'){json(200,{...gate.status(),modelOrigin,modelRequestsReceived});return;}
+      if(req.method==='GET'&&req.url.startsWith('/versions/review?')&&reviewVersions){
+        const url=new URL(req.url,'http://localhost');
+        const origin=url.searchParams.get('origin');
+        if(!origin||origin.length>512){json(400,{error:{message:'Review environment is missing'}});return;}
+        json(200,await reviewVersions(origin));return;
+      }
+      if(req.method==='GET'&&req.url==='/versions/decisions'&&versionDecisions){json(200,{decisions:versionDecisions()});return;}
       if(req.method==='GET'&&req.url==='/'){
         res.writeHead(200,{'content-type':'text/html; charset=utf-8','cache-control':'no-store','content-security-policy':"default-src 'none'; style-src 'unsafe-inline'; form-action 'self'; frame-ancestors 'self'"});res.end(renderStatus(gate.status()));return;
       }

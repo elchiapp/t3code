@@ -1,0 +1,30 @@
+import {collectHardwareInput} from './collect-evidence.mjs';
+import {firmwareReview,inferenceReview,currentVersionDecisions,policy,proxyOrigin} from './crypto-verifier.mjs';
+
+export async function reviewVersions(origin){
+  const target=new URL(origin);
+  if(!['http:','https:'].includes(target.protocol)||target.origin!==origin||target.username||target.password)
+    throw Error('Invalid review environment');
+  let timer;
+  try{
+    const result=await Promise.race([
+      Promise.allSettled([
+        (async()=>{const input=await collectHardwareInput();return(await firmwareReview(input.challenge,input.evidence,
+          {origin,tlsSpkiSha256:input.tlsSpkiSha256})).review;})(),
+        inferenceReview(origin).then(value=>value.review),
+      ]),
+      new Promise((_,reject)=>{timer=setTimeout(()=>reject(Error('Version review timed out')),40000);}),
+    ]);
+    const reviews=result.map((value,index)=>value.status==='fulfilled'?value.value:{
+      id:'',origin,component:index===0?'vm-firmware':'inference-release',
+      targetOrigin:index===0?proxyOrigin:policy.tinfoil.enclaveOrigin,binding:'',
+      vendor:index===0?'Google':'Tinfoil',title:index===0?'VM boot firmware (UEFI)':'Inference release',
+      version:'Unavailable',fingerprint:'',previousVersion:null,previousFingerprint:null,
+      eligible:false,approvalState:'rejected',
+      explanation:'Fresh evidence did not pass: '+String(value.reason?.message??'Review unavailable').slice(0,200),
+      changes:[],links:[],sourceAvailability:'Source links require verified evidence.',expiresAt:Date.now()+60000,
+    });
+    return {reviews,decisions:currentVersionDecisions(),errors:result.filter(value=>value.status==='rejected')
+      .map(value=>String(value.reason?.message??'Review unavailable').slice(0,200))};
+  }finally{clearTimeout(timer);}
+}

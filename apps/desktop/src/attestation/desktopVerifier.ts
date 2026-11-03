@@ -19,7 +19,7 @@ const Policy = Schema.Struct({
   inferenceOrigin: Schema.optionalKey(Schema.String),
 });
 export type DeviceAttestationPolicy = typeof Policy.Type;
-const decodeDevicePolicy = Schema.decodeUnknownSync(Policy);
+export const decodeDevicePolicy = Schema.decodeUnknownSync(Policy);
 const decodeProof = Schema.decodeUnknownSync(LocalProof);
 
 const requiredChecks = ["hardware", "tls_key_commitment", "inference"] as const;

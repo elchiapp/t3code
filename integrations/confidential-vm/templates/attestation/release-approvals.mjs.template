@@ -10,7 +10,7 @@ function identity({tag,digest}={}){
 }
 export function readApprovals(path=APPROVAL_PATH){
   let stat;try{stat=lstatSync(path);}catch(error){if(error.code==='ENOENT')return [];throw error;}
-  if(!stat.isFile()||stat.uid!==process.getuid()||(stat.mode&0o077)||stat.size>32768)throw Error('The local release approval file is not protected');
+  if(!stat.isFile()||stat.size>32768||(process.platform!=='win32'&&(stat.uid!==process.getuid()||(stat.mode&0o077))))throw Error('The local release approval file is not protected');
   const data=JSON.parse(readFileSync(path,'utf8'));
   if(data.version!==1||!Array.isArray(data.releases)||data.releases.length>32)throw Error('Invalid local release approvals');
   return data.releases.map(item=>{

@@ -1,6 +1,6 @@
 {
   "name": "@t3tools/contracts",
-  "version": "0.1.6-turing.8",
+  "version": "0.1.6-turing.9",
   "private": true,
   "files": [
     "dist"

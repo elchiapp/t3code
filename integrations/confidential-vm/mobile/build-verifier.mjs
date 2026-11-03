@@ -25,7 +25,15 @@ if (
   }).trim()
 )
   throw Error("Verifier SDK source is not the clean pinned revision");
-for (const name of ["verifier-core.mjs", "vcek-bindings.mjs", "inference-release-policy.mjs"]) {
+for (const name of [
+  "verifier-core.mjs",
+  "vcek-bindings.mjs",
+  "inference-release-policy.mjs",
+  "google-firmware.mjs",
+  "firmware-review.mjs",
+  "inference-review.mjs",
+  "version-decisions.mjs",
+]) {
   const relative = "templates/attestation/verifier/" + name + ".template";
   if (
     hash(NodeFS.readFileSync(NodePath.join(root, "integrations/confidential-vm", relative))) !==
@@ -112,6 +120,7 @@ const build = await rolldown({
       "@tinfoilsh/verifier": NodePath.join(sdk, "packages/verifier/dist/index.js"),
       "@t3-pinned-vcek": NodePath.join(sdk, "packages/verifier/dist/sev/cert-chain.js"),
       "@t3-pinned-x509": sdkRequire.resolve("@freedomofpress/sigstore-browser"),
+      "@t3-pinned-sigstore": NodePath.join(sdk, "packages/verifier/dist/sigstore.js"),
       "@t3-mobile-policy": policyFile,
     },
   },

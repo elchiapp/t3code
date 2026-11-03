@@ -137,6 +137,27 @@ failed evidence never become verified through an override. A client override
 does not alter server access rules, certificate pins, tool approvals or the
 inference gateway's own release policy.
 
+## Review build changes
+
+In an installed T3 Attested client, open the verification indicator and select
+**Review versions**. VM boot firmware and inference releases have separate
+reviews. **View changes**, **View source** and **Proof details** show the available
+signed metadata and source links. An absent exact source mapping is stated
+explicitly. A publisher signature does not establish that a change is safe.
+
+**Approve exact build** requires device authentication and fresh matching
+evidence. It saves only that fingerprint on this device. It does not install
+firmware, approve future builds or change another device's approvals.
+**Revoke approval** removes trust in that exact build and invalidates current
+verification. Closing a pending review cancels approval.
+
+macOS uses device-owner authentication, Windows uses Windows Hello, and mobile
+uses the system biometric or device-credential prompt. Linux uses Polkit; the
+**Set up system authentication** action installs the bundled `auth_self` rule
+after a one-time administrator prompt. Missing system authentication fails
+closed. A browser-only client cannot approve builds. T3's agent server does not
+receive an approval endpoint or authority to change device trust.
+
 ## Test and recovery
 
 Run `python3 integrations/confidential-vm/test.py` after building the pinned SDK.

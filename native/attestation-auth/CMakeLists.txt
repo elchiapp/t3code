@@ -1,0 +1,8 @@
+cmake_minimum_required(VERSION 3.20)
+project(T3AttestationAuth LANGUAGES CXX)
+if(NOT WIN32)
+  message(FATAL_ERROR "This target uses Windows Hello. Build macos.swift on macOS.")
+endif()
+add_executable(t3-attestation-auth windows.cpp)
+target_compile_features(t3-attestation-auth PRIVATE cxx_std_17)
+target_link_libraries(t3-attestation-auth PRIVATE windowsapp runtimeobject)

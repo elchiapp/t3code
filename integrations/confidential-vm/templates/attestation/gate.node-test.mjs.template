@@ -14,7 +14,7 @@ async function server(t,collect,options={}){
   let posts=0;const gate=new AttestationGate({collect,...options});
   const s=createGateServer({gate,metadata:async()=>({data:[]}),forward:async({res,body,isCurrent})=>{assert.equal(isCurrent(),true);posts++;res.writeHead(200,{'content-type':'application/json'});res.end(JSON.stringify({received:body.toString()}));},...options});
   s.listen(0,'127.0.0.1');await once(s,'listening');t.after(()=>{s.closeAllConnections();s.close();});
-  return {gate,posts:()=>posts,request:(path='/v1/responses',init={})=>new Promise((resolve,reject)=>{const q=http.request(`http://127.0.0.1:${s.address().port}${path}`,{method:'POST',headers:{'content-type':'application/json',...init.headers}},r=>{r.resume();r.on('end',()=>resolve({status:r.statusCode}));});q.on('error',reject);q.end('{"input":"synthetic canary"}');})};
+  return {gate,posts:()=>posts,request:(path='/v1/responses',init={})=>new Promise((resolve,reject)=>{const q=http.request(`http://127.0.0.1:${s.address().port}${path}`,{method:init.method??'POST',headers:{'content-type':'application/json',...init.headers}},r=>{r.resume();r.on('end',()=>resolve({status:r.statusCode}));});q.on('error',reject);q.end(init.method==='GET'?undefined:'{"input":"synthetic canary"}');})};
 }
 test('missing hardware blocks before any canary reaches inference',async t=>{
   const x=await server(t,async()=>({checks:{inference:{state:'verified'}}}));assert.equal((await x.request()).status,503);assert.equal(x.posts(),0);
@@ -72,4 +72,14 @@ test('a different TLS public key is rejected before the HTTP request',async t=>{
   const request=agent=>new Promise((resolve,reject)=>{const q=https.get(url,{agent},r=>{r.resume();r.on('end',()=>resolve(r.statusCode));});q.on('error',reject);});
   const correct=pinnedAgent(spkiHash(raw),{ca:cert});t.after(()=>correct.destroy());assert.equal(await request(correct),200);
   const wrong=pinnedAgent('0'.repeat(64),{ca:cert});t.after(()=>wrong.destroy());await assert.rejects(request(wrong),/TLS key differs/);assert.equal(received,1);
+});
+
+test('version review endpoints are read-only and never accept an HTTP approval',async t=>{
+  const x=await server(t,async()=>valid(),{reviewVersions:async()=>({reviews:[]}),versionDecisions:()=>[]});
+  assert.equal((await x.request('/versions/review?origin=https%3A%2F%2Fvm.example',{method:'GET'})).status,200);
+  assert.equal((await x.request('/versions/decisions',{method:'GET'})).status,200);
+  assert.equal((await x.request('/versions/decisions')).status,404);
+  assert.equal((await x.request('/versions/approve')).status,404);
+  assert.equal((await x.request('/versions/review?origin=https%3A%2F%2Fvm.example',{method:'GET',headers:{origin:'https://untrusted.example'}})).status,403);
+  assert.equal(x.posts(),0);
 });

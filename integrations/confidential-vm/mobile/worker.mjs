@@ -10,6 +10,18 @@ import {
 import { createVcekBindingVerifier } from "../templates/attestation/verifier/vcek-bindings.mjs.template";
 import { classifyInferenceRelease } from "../templates/attestation/verifier/inference-release-policy.mjs.template";
 import { Verifier } from "@tinfoilsh/verifier";
+import { assembleAttestationBundle } from "@tinfoilsh/verifier";
+import { verifySigstoreBundle } from "@t3-pinned-sigstore";
+import {
+  createGoogleFirmwareVerifier,
+  googleFirmwareCpuHint,
+} from "../templates/attestation/verifier/google-firmware.mjs.template";
+import { createFirmwareReviewer } from "../templates/attestation/verifier/firmware-review.mjs.template";
+import { createInferenceReviewer } from "../templates/attestation/verifier/inference-review.mjs.template";
+import {
+  validateVersionDecisions,
+  inferenceDecision,
+} from "../templates/attestation/verifier/version-decisions.mjs.template";
 import { CertificateChain } from "@t3-pinned-vcek";
 import { X509Certificate } from "@t3-pinned-x509";
 import configuration from "@t3-mobile-policy";
@@ -57,6 +69,50 @@ globalThis.fetch = async (url, options = {}) => {
     options.signal?.removeEventListener("abort", abort);
   }
 };
+const readDecisions = (values) => validateVersionDecisions({ version: 1, decisions: values ?? [] });
+const fromBase64 = (value) => Uint8Array.from(atob(value), (character) => character.charCodeAt(0));
+const hex = (bytes) => Array.from(bytes, (value) => value.toString(16).padStart(2, "0")).join("");
+function firmwareReviewer(metadata) {
+  if (!Array.isArray(metadata) || metadata.length > 2)
+    throw Error("Public firmware evidence is missing.");
+  return createFirmwareReviewer({
+    verifySnpEvidence,
+    expectedReportData,
+    checkChallengeShape,
+    verifyVcekBindings: bindings,
+    verifyGoogleFirmware: createGoogleFirmwareVerifier({ X509Certificate }),
+    googleFirmwareCpuHint,
+    loadGoogleEvidence: async (measurement) => {
+      const value = metadata.find((item) => item.measurement === measurement);
+      if (!value || value.endorsementBase64.length > 180000 || value.rootBase64.length > 12000)
+        throw Error("Public firmware evidence is missing or too large.");
+      return {
+        endorsement: fromBase64(value.endorsementBase64),
+        rootCertificate: fromBase64(value.rootBase64),
+      };
+    },
+  });
+}
+const inferenceReviewer = createInferenceReviewer({
+  Verifier,
+  assembleAttestationBundle,
+  verifySigstoreBundle,
+  X509Certificate,
+  classifyInferenceRelease,
+  inferenceDecision,
+  loadProvenance: async (repo, digest) => {
+    if (repo !== policy.tinfoil.configRepo || !/^[a-f0-9]{64}$/.test(digest))
+      throw Error("Invalid provenance target.");
+    const response = await fetch(
+      `https://github-proxy.tinfoil.sh/repos/${repo}/attestations/sha256:${digest}`,
+    );
+    if (!response.ok) throw Error("Published source provenance is unavailable.");
+    const value = await response.json();
+    if (!value.attestations?.[0]?.bundle)
+      throw Error("Published source provenance is unavailable.");
+    return value.attestations[0].bundle;
+  },
+});
 const operations = {
   async prepare() {
     const { privateKey: _privateKey, ...challenge } = await createChallenge({
@@ -76,23 +132,63 @@ const operations = {
     );
     return { nonce, challenge, expiresAt: challenge.expiresAt };
   },
-  async hardware({ challenge, evidence }) {
-    if (
-      evidence?.version !== 1 ||
-      evidence.modelOrigin !== configuration.modelOrigin ||
-      evidence.tlsSpkiSha256 !== configuration.tlsSpkiSha256
-    )
-      throw Error("Evidence target differs from the device policy");
-    checkChallengeShape(challenge, policy, Date.now());
-    await verifySnpEvidence(evidence.snp, {
+  async firmwareLookup({ evidence, decisions }) {
+    const bytes = fromBase64(evidence?.snp?.reportBase64 ?? "");
+    if (bytes.length !== 1184) throw Error("Invalid VM hardware report.");
+    const current = hex(bytes.subarray(0x90, 0xc0));
+    const selected = readDecisions(decisions).find(
+      (value) =>
+        value.component === "vm-firmware" &&
+        value.targetOrigin === configuration.modelOrigin &&
+        value.binding === configuration.tlsSpkiSha256,
+    );
+    return [
+      ...new Set([
+        selected?.action === "approve" ? selected.fingerprint : policy.hardware.snp.measurementHex,
+        current,
+      ]),
+    ];
+  },
+  async hardware({ challenge, evidence, decisions, firmwareEvidence }) {
+    const result = await firmwareReviewer(firmwareEvidence)({
       policy,
-      expectedReportDataBytes: await expectedReportData(challenge),
+      challenge,
+      evidence,
+      modelOrigin: configuration.modelOrigin,
+      tlsSpkiSha256: configuration.tlsSpkiSha256,
+      origin: configuration.environmentOrigins[0],
+      decisions: readDecisions(decisions),
       now: Date.now(),
-      verifyVcekBindings: bindings,
     });
+    if (!result.approved) throw Error("VM firmware requires an exact-build approval in T3.");
     return true;
   },
-  async inference() {
+  async reviewFirmware({ origin, challenge, evidence, decisions, firmwareEvidence }) {
+    return (
+      await firmwareReviewer(firmwareEvidence)({
+        policy,
+        challenge,
+        evidence,
+        modelOrigin: configuration.modelOrigin,
+        tlsSpkiSha256: configuration.tlsSpkiSha256,
+        origin,
+        decisions: readDecisions(decisions),
+        now: Date.now(),
+      })
+    ).review;
+  },
+  async reviewInference({ origin, decisions }) {
+    return (
+      await inferenceReviewer({
+        policy,
+        origin,
+        decisions: readDecisions(decisions),
+        legacyApprovals: configuration.ownerApprovals,
+        now: Date.now(),
+      })
+    ).review;
+  },
+  async inference({ decisions } = {}) {
     const verifier = new Verifier({
       serverURL: policy.tinfoil.enclaveOrigin,
       configRepo: policy.tinfoil.configRepo,
@@ -114,6 +210,15 @@ const operations = {
       policy.tinfoil.enclaveOrigin,
       configuration.ownerApprovals,
     );
+    const document = verifier.getVerificationDocument();
+    const local = inferenceDecision(readDecisions(decisions), {
+      endpoint: policy.tinfoil.enclaveOrigin,
+      repo: policy.tinfoil.configRepo,
+      tag: document?.releaseTag,
+      digest: document?.releaseDigest,
+    });
+    if (local === "approve") decision.status = "verified";
+    if (local === "revoke" || local === "unapproved") decision.status = "release_not_approved";
     return {
       state: decision.status === "verified" ? "verified" : "approval_required",
       detail:

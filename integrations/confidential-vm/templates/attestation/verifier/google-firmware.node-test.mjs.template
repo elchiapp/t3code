@@ -1,0 +1,45 @@
+import {readFileSync} from 'node:fs';
+import {createRequire} from 'node:module';
+import {pathToFileURL} from 'node:url';
+import {test} from 'node:test';
+import assert from 'node:assert/strict';
+import {createGoogleFirmwareVerifier} from './google-firmware.mjs';
+
+const require = createRequire('{{TINFOIL_SDK_ROOT}}/package.json');
+const {X509Certificate} = await import(pathToFileURL(require.resolve('@freedomofpress/sigstore-browser')));
+const verify = createGoogleFirmwareVerifier({X509Certificate});
+const fixture = JSON.parse(readFileSync(new URL('./google-firmware.fixture.json',import.meta.url),'utf8'));
+const sample = () => ({
+  endorsement:Uint8Array.from(Buffer.from(fixture.endorsementBase64,'base64')),
+  rootCertificate:Uint8Array.from(Buffer.from(fixture.rootBase64,'base64')),
+  measurementHex:fixture.measurement,
+  launchVcpus:4, minSvn:2, expectedFamilyId:fixture.family,
+  now:Date.parse('2026-11-03T00:00:00Z'),
+});
+
+test('verifies the real Google certificate chain and exact firmware measurement',async()=>{
+  const result=await verify(sample());
+  assert.equal(result.build,fixture.build);
+  assert.equal(result.measurementHex,fixture.measurement);
+  assert.equal(result.launchVcpus,4);
+  assert.equal(result.securityVersion,2);
+  assert.equal(result.sourceUrl,null);
+});
+
+test('rejects altered signed bytes and an unapproved root',async()=>{
+  const changed=sample();changed.endorsement[changed.endorsement.length-1]^=1;
+  await assert.rejects(verify(changed));
+  const root=sample();root.rootCertificate[0]^=1;
+  await assert.rejects(verify(root),/root certificate is not approved/);
+});
+
+test('rejects a wrong measurement, launch configuration, family and security regression',async()=>{
+  for(const changes of [{measurementHex:'a'.repeat(96)},{launchVcpus:8},{expectedFamilyId:'a'.repeat(32)},{minSvn:3}])
+    await assert.rejects(verify({...sample(),...changes}));
+});
+
+test('rejects malformed, oversized and expired certificate evidence',async()=>{
+  await assert.rejects(verify({...sample(),endorsement:new Uint8Array([10,255])}));
+  await assert.rejects(verify({...sample(),endorsement:new Uint8Array(131073)}),/size limit/);
+  await assert.rejects(verify({...sample(),now:Date.parse('2100-01-01T00:00:00Z')}),/signing certificate is not valid/);
+});

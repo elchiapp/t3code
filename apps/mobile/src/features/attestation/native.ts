@@ -6,6 +6,8 @@ import type { MobileProofPolicy } from "./deviceVerifier";
 interface NativeAttestation {
   policy(): unknown;
   transportProtected(): boolean;
+  authenticateOwner?(reason: string): Promise<boolean>;
+  cancelAuthentication?(): void;
 }
 
 export interface BundledMobilePolicy extends MobileProofPolicy {
@@ -41,4 +43,14 @@ export function readBundledMobilePolicy(): BundledMobilePolicy {
 
 export function nativeTransportProtected(): boolean {
   return ["ios", "android"].includes(Platform.OS) && native?.transportProtected() === true;
+}
+
+export async function authenticateAttestationOwner(reason: string): Promise<boolean> {
+  if (!native?.authenticateOwner)
+    throw new Error("Device authentication is unavailable in this app build.");
+  return native.authenticateOwner(reason);
+}
+
+export function cancelAttestationAuthentication(): void {
+  native?.cancelAuthentication?.();
 }

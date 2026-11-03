@@ -1,0 +1,62 @@
+const hex = bytes => Array.from(bytes,value=>value.toString(16).padStart(2,'0')).join('');
+const reportBytes = value => Uint8Array.from(atob(value),character=>character.charCodeAt(0));
+const fail = reason => { throw Error(reason); };
+
+export function createFirmwareReviewer({verifySnpEvidence,expectedReportData,checkChallengeShape,verifyVcekBindings,verifyGoogleFirmware,googleFirmwareCpuHint,loadGoogleEvidence}) {
+  return async function reviewFirmware({policy,challenge,evidence,modelOrigin,tlsSpkiSha256,origin,decisions=[],now}) {
+    if (evidence?.version !== 1 || evidence.modelOrigin !== modelOrigin || evidence.tlsSpkiSha256 !== tlsSpkiSha256 ||
+        !/^[a-f0-9]{64}$/.test(tlsSpkiSha256)) fail('The VM proof does not match the selected connection key.');
+    checkChallengeShape(challenge,policy,now);
+    const report = reportBytes(evidence.snp?.reportBase64 ?? '');
+    if (report.length !== 1184) fail('Invalid VM hardware report.');
+    const measured = hex(report.subarray(0x90,0xc0));
+    const candidatePolicy = structuredClone(policy);
+    candidatePolicy.hardware.snp.measurementHex = measured;
+    const hardware = await verifySnpEvidence(evidence.snp,{
+      policy:candidatePolicy,expectedReportDataBytes:await expectedReportData(challenge),now,verifyVcekBindings,
+    });
+    const selected = decisions.find(value=>value.component==='vm-firmware' && value.targetOrigin===modelOrigin && value.binding===tlsSpkiSha256);
+    const previous = selected?.action === 'approve' ? selected.fingerprint : policy.hardware.snp.measurementHex;
+    if (!/^[a-f0-9]{96}$/.test(previous ?? '')) fail('The approved VM launch fingerprint is missing.');
+    const [baselineData,currentData] = await Promise.all([
+      loadGoogleEvidence(previous),loadGoogleEvidence(measured),
+    ]);
+    const baseline = await verifyGoogleFirmware({
+      ...baselineData,measurementHex:previous,
+      launchVcpus:googleFirmwareCpuHint(baselineData.endorsement,previous),minSvn:0,now,
+    });
+    const current = await verifyGoogleFirmware({
+      ...currentData,measurementHex:measured,
+      launchVcpus:googleFirmwareCpuHint(currentData.endorsement,measured),
+      minSvn:baseline.securityVersion,expectedFamilyId:baseline.familyId,now,
+    });
+    const revoked = selected?.action==='revoke' && selected.fingerprint===measured;
+    const approved = !revoked && measured === previous;
+    return {
+      hardware,current,baseline,approved,revoked,
+      review:{
+        id:'',origin,component:'vm-firmware',targetOrigin:modelOrigin,binding:tlsSpkiSha256,
+        vendor:'Google',title:'VM boot firmware (UEFI)',version:current.build,fingerprint:measured,
+        previousVersion:baseline.build,previousFingerprint:previous,eligible:true,
+        approvalState:approved?'approved':revoked?'revoked':'required',
+        explanation:approved
+          ? 'This exact VM launch fingerprint is approved on this device.'
+          : 'This is Google-signed boot firmware. Approving accepts this exact launch fingerprint; it does not install firmware or approve later builds.',
+        changes:[
+          `Google build: ${baseline.build} → ${current.build}`,
+          `Firmware security version: ${baseline.securityVersion} → ${current.securityVersion}`,
+          `Virtual CPUs at launch: ${baseline.launchVcpus} → ${current.launchVcpus}`,
+          'Fresh AMD hardware signature, firmware floor and the pinned connection key passed.',
+          'Guest operating-system and agent software remain trusted; this does not attest their application code.',
+        ],
+        links:[
+          {kind:'evidence',label:'Signed firmware evidence',url:current.evidenceUrl},
+          {kind:'vendor',label:'Google verification documentation',url:current.vendorUrl},
+          {kind:'vendor',label:'Google release notes (general)',url:'https://docs.cloud.google.com/confidential-computing/confidential-vm/docs/release-notes'},
+        ],
+        sourceAvailability:current.sourceAvailability,
+        expiresAt:now+30*60_000,
+      },
+    };
+  };
+}

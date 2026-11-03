@@ -1,0 +1,62 @@
+import {test} from 'node:test';
+import assert from 'node:assert/strict';
+import {mkdtempSync,rmSync,writeFileSync,chmodSync,lstatSync,symlinkSync} from 'node:fs';
+import {tmpdir} from 'node:os';
+import {join} from 'node:path';
+import {readDeviceDecisions,writeDeviceDecisions} from './device-approval-store.mjs';
+import {inferenceDecision,validateVersionDecisions,versionReceiptAllowed} from './verifier/version-decisions.mjs';
+
+const row=()=>({component:'inference-release',targetOrigin:'https://inference.example',binding:'vendor/config',
+  version:'v1.0.0',fingerprint:'a'.repeat(64),action:'approve',decidedAt:1000});
+
+test('saves protected decisions atomically and retains explicit revocation',()=>{
+  const directory=mkdtempSync(join(tmpdir(),'device-decision-'));
+  try{
+    const path=join(directory,'private','versions.json');
+    assert.equal(readDeviceDecisions(path),null);
+    writeDeviceDecisions([row()],path);
+    assert.deepEqual(readDeviceDecisions(path),[row()]);
+    if(process.platform!=='win32')assert.equal(lstatSync(path).mode&0o777,0o600);
+    writeDeviceDecisions([{...row(),action:'revoke'}],path);
+    assert.equal(readDeviceDecisions(path)[0].action,'revoke');
+  }finally{rmSync(directory,{recursive:true,force:true});}
+});
+
+test('refuses ambiguous, malformed, unprotected and linked decision files',()=>{
+  assert.throws(()=>validateVersionDecisions({version:1,decisions:[row(),row()]}),/Ambiguous/);
+  assert.throws(()=>validateVersionDecisions({version:1,decisions:[{...row(),targetOrigin:'http://inference.example'}]}),/HTTPS/);
+  assert.throws(()=>validateVersionDecisions({version:1,decisions:[{...row(),action:'automatic'}]}),/Invalid/);
+  const directory=mkdtempSync(join(tmpdir(),'device-decision-'));
+  try{
+    const path=join(directory,'versions.json');writeFileSync(path,'{}',{mode:0o600});
+    assert.throws(()=>readDeviceDecisions(path),/Invalid/);
+    if(process.platform!=='win32'){
+      writeFileSync(path,JSON.stringify({version:1,decisions:[row()]}));chmodSync(path,0o644);
+      assert.throws(()=>readDeviceDecisions(path),/not protected/);
+      const link=join(directory,'linked.json');symlinkSync(path,link);
+      assert.throws(()=>readDeviceDecisions(link),/not protected/);
+    }
+  }finally{rmSync(directory,{recursive:true,force:true});}
+});
+
+test('applies exact source and target scope and prevents automatic rollback after approving a version',()=>{
+  const target={endpoint:'https://inference.example',repo:'vendor/config',tag:'v1.0.0',digest:'a'.repeat(64)};
+  assert.equal(inferenceDecision([row()],target),'approve');
+  assert.equal(inferenceDecision([row()],{...target,endpoint:'https://other.example'}),null);
+  assert.equal(inferenceDecision([row()],{...target,repo:'other/config'}),null);
+  assert.equal(inferenceDecision([row()],{...target,tag:'v0.9.0',digest:'b'.repeat(64)}),'unapproved');
+  assert.equal(inferenceDecision([{...row(),action:'revoke'}],target),'revoke');
+});
+
+test('invalidates a cached inference receipt immediately after its approval is removed or revoked',()=>{
+  const context={modelOrigin:'https://vm.example',firmwareBaseline:'b'.repeat(96),
+    inferenceOrigin:'https://inference.example',inferenceRepo:'vendor/config',inferenceBaseline:[]};
+  const receipt={tlsSpkiSha256:'c'.repeat(64),checks:{hardware:{measurement:'b'.repeat(96)},
+    inference:{releaseTag:'v1.0.0',releaseDigest:'a'.repeat(64)}}};
+  assert.equal(versionReceiptAllowed([row()],context,receipt),true);
+  assert.equal(versionReceiptAllowed([],context,receipt),false);
+  assert.equal(versionReceiptAllowed([{...row(),action:'revoke'}],context,receipt),false);
+  const firmware={component:'vm-firmware',targetOrigin:'https://vm.example',binding:'c'.repeat(64),
+    version:'100',fingerprint:'b'.repeat(96),action:'revoke',decidedAt:1000};
+  assert.equal(versionReceiptAllowed([row(),firmware],context,receipt),false);
+});

@@ -3,6 +3,7 @@ import { attestationReport, type AttestationProvider } from "@t3tools/client-run
 import { Popover, PopoverTrigger, PopoverPopup } from "../ui/popover";
 import { Button } from "../ui/button";
 import { cn } from "~/lib/utils";
+import { AttestationVersionReview } from "./AttestationVersionReview";
 
 export function AttestationIndicator({
   status,
@@ -118,6 +119,11 @@ export function AttestationIndicator({
             <Button size="sm" variant="outline" onClick={onRetry} disabled={report.pending}>
               Check again
             </Button>
+            <AttestationVersionReview
+              key={status.targets?.vmOrigin ?? status.origin}
+              origin={status.targets?.vmOrigin ?? status.origin}
+              onChanged={onRetry}
+            />
           </div>
         </PopoverPopup>
       </Popover>

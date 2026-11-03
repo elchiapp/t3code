@@ -90,9 +90,11 @@ review/distribution for longer-lived delivery. An ad hoc device build requires
 that iPhone's UDID in its provisioning profile. A Metro-dependent development
 client does not satisfy the independent-phone acceptance requirement.
 
-Current owner-approved release policy is baked into the first build. An unknown
-future Tinfoil release is never marked verified without a reviewed policy update;
-refresh or a conversation override never approves a release. The inference
+The first build includes an approved baseline. Later exact-build approvals are
+saved on each device through **Review versions** in the verification indicator,
+after device authentication and fresh evidence. No rebuild is needed to approve
+a supported firmware or inference update. Refresh and conversation overrides do
+not approve releases. The inference
 service can still refuse requests under its own release policy. App signing and distribution,
 physical iPhone testing, Android native acceptance and independent production
 security review are separate release gates.

@@ -8,6 +8,7 @@ Pod::Spec.new do |s|
   s.platforms = { :ios => '18.0' }
   s.source = { :path => '.' }
   s.static_framework = true
+  s.frameworks = 'LocalAuthentication', 'Security'
   s.dependency 'ExpoModulesCore'
   s.dependency 'React-Core'
   s.dependency 'React-CoreModules'

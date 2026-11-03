@@ -28,3 +28,48 @@ export const AttestationStatus = Schema.Struct({
   ),
 });
 export type AttestationStatus = typeof AttestationStatus.Type;
+
+export const AttestationReviewLink = Schema.Struct({
+  label: Schema.String,
+  url: Schema.String,
+  kind: Schema.Literals(["changes", "source", "evidence", "vendor"]),
+});
+
+export const AttestationVersionReview = Schema.Struct({
+  id: Schema.String,
+  origin: Schema.String,
+  component: Schema.Literals(["vm-firmware", "inference-release"]),
+  targetOrigin: Schema.String,
+  binding: Schema.String,
+  vendor: Schema.String,
+  title: Schema.String,
+  version: Schema.String,
+  fingerprint: Schema.String,
+  previousVersion: Schema.NullOr(Schema.String),
+  previousFingerprint: Schema.NullOr(Schema.String),
+  eligible: Schema.Boolean,
+  approvalState: Schema.Literals(["approved", "required", "revoked", "rejected"]),
+  explanation: Schema.String,
+  changes: Schema.Array(Schema.String),
+  links: Schema.Array(AttestationReviewLink),
+  sourceAvailability: Schema.String,
+  expiresAt: Schema.Number,
+});
+export type AttestationVersionReview = typeof AttestationVersionReview.Type;
+
+export const AttestationVersionDecision = Schema.Struct({
+  reviewId: Schema.String,
+  action: Schema.Literals(["approve", "revoke", "cancel"]),
+});
+export type AttestationVersionDecision = typeof AttestationVersionDecision.Type;
+
+export const DeviceVersionDecisionRecord = Schema.Struct({
+  component: Schema.Literals(["vm-firmware", "inference-release"]),
+  targetOrigin: Schema.String,
+  binding: Schema.String,
+  version: Schema.String,
+  fingerprint: Schema.String,
+  action: Schema.Literals(["approve", "revoke"]),
+  decidedAt: Schema.Number,
+});
+export type DeviceVersionDecisionRecord = typeof DeviceVersionDecisionRecord.Type;

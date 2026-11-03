@@ -1015,6 +1015,14 @@ export interface DesktopBridge {
   getAttestationStatus?: (
     request: import("./attestation.ts").AttestationRequest,
   ) => Promise<import("./attestation.ts").AttestationStatus>;
+  getAttestationVersionReviews?: (
+    request: import("./attestation.ts").AttestationRequest,
+  ) => Promise<ReadonlyArray<import("./attestation.ts").AttestationVersionReview>>;
+  decideAttestationVersion?: (
+    decision: import("./attestation.ts").AttestationVersionDecision,
+  ) => Promise<"approved" | "revoked" | "cancelled">;
+  onAttestationVersionsChanged?: (listener: () => void) => () => void;
+  configureAttestationAuthentication?: () => Promise<boolean>;
   getAppBranding: () => DesktopAppBranding | null;
   getRelayTelemetryEnabled: () => boolean;
   getPathForFile: (file: File) => string;

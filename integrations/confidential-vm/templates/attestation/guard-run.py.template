@@ -9,7 +9,7 @@ plan = json.loads((root / 'activation-plan.json').read_text())
 node = Path(plan['node_path'])
 if hashlib.sha256(node.read_bytes()).hexdigest() != plan['node_sha256']:
     raise RuntimeError('The pinned Node runtime differs; forwarding is unavailable')
-keys = ['PATH', 'HOME', 'USER', 'LOGNAME', 'SHELL', 'TMPDIR', 'LANG', 'LC_ALL']
+keys = ['PATH', 'HOME', 'USER', 'LOGNAME', 'SHELL', 'TMPDIR', 'LANG', 'LC_ALL', 'APPDATA', 'XDG_CONFIG_HOME']
 environment = {key: os.environ[key] for key in keys if key in os.environ}
 environment['DO_NOT_TRACK'] = '1'
 os.chdir(root)

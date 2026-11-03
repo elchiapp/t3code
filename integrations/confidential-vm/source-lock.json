@@ -53,7 +53,7 @@
       "template_sha256": "b3443d413f0e820ff0fae2bc88987836ab9514918543697cd46d48d9905fc781"
     },
     "templates/attestation/gate.node-test.mjs.template": {
-      "template_sha256": "1ed98b9881f14d39b4688ed8e56c93878b6eb55c00ef34e829eeca113e19976c"
+      "template_sha256": "15117876f8fe4d8f428c74f6629bf8f3600f3af4253c2dddeb5b904037f5792e"
     },
     "templates/attestation/release-decision.mjs.template": {
       "template_sha256": "e67bae59b92cc43733c4dd49016113793a21d047f6eae3dac92874a56c73e7fc"
@@ -71,10 +71,10 @@
       "template_sha256": "3079db67f1dc5b5383f5c4da789cac9ed0a1bdcc02a5a1b618e2a989a610cfb7"
     },
     "templates/attestation/gate-server.mjs.template": {
-      "template_sha256": "6183eea71f618855591041646a3bba97b3662e5746410f41ffc809384136f737"
+      "template_sha256": "39ab15a4e719bb49e50471dbcd7faf0b35c756f174f5bc44a23cf842588288de"
     },
     "templates/attestation/release-approvals.mjs.template": {
-      "template_sha256": "4d9ad740aa82db2178f71dd4ab6de5595d1bafb11637d04ae33553900e2229c2"
+      "template_sha256": "27d1052b0535e2c6885c6a996e1803f42d68aa68f85b0e6455066463250911e9"
     },
     "templates/attestation/vm-proof-server.node-test.mjs.template": {
       "template_sha256": "a3eb6e970ed71f2948a3ec54b67d4f33a5430b48fd61bb2812eba34be329cb12"
@@ -83,16 +83,16 @@
       "template_sha256": "5e310b35d2b0fba201457c73f7092084cfbbba3704a25e2ec6ee20fa8cc8b62f"
     },
     "templates/attestation/crypto-verifier.mjs.template": {
-      "template_sha256": "55d05f807332f8282873206f60cf8ed2bcbf74770e98e633a28bb8772892bb67"
+      "template_sha256": "b6cb5c1eb716510a35d5afd2c506ef8e4a90792f7b8171fbced0dceb250bd5fd"
     },
     "templates/attestation/collect-evidence.mjs.template": {
-      "template_sha256": "aab9381900cc2da90480c604854a4791011ea8b942ebef60125a53330e87a268"
+      "template_sha256": "20893be1d1706d3a9d2ddb7a3dde175d3d20303b0bedd7c47b93edea428c0cdc"
     },
     "templates/attestation/main.mjs.template": {
-      "template_sha256": "da1af5d5fe144cc655eb2034abb85a61ab63b71df86c0b9182df0f264d791ac8"
+      "template_sha256": "2e61865bdb9eb3859fcc76f81ec23416d699bd77963109b2fe9663fe991063bf"
     },
     "templates/attestation/guard-run.py.template": {
-      "template_sha256": "8cc485d70088fd0703d03a594d1df7cdf10b6f44cdb5ad231e05d3a98c0f1321"
+      "template_sha256": "d6824c590b5e826e2a44f5d2f1475198725b4ed3e98b93d4e24c39a0fbd5701a"
     },
     "templates/attestation/endpoint-binding.mjs.template": {
       "template_sha256": "b802fc74621387d68772a72962246b6590e087324b919f0c485189e535e02ace"
@@ -189,6 +189,33 @@
     },
     "templates/attestation/verifier/vcek-bindings.mjs.template": {
       "template_sha256": "2f7102f5ff3c107ebbe9668228382a32e018260ca736816d00f238dcf63c5948"
+    },
+    "templates/attestation/verifier/google-firmware.mjs.template": {
+      "template_sha256": "de495632cf4430ca048b698c3e22f2584582428ccbad5a11c1804398775b2dc5"
+    },
+    "templates/attestation/verifier/google-firmware.node-test.mjs.template": {
+      "template_sha256": "aed5985f75849d5e3ab01604e5d4b972e4f3ade8a30149c4e39f61b1e3ce0bca"
+    },
+    "templates/attestation/verifier/google-firmware.fixture.json.template": {
+      "template_sha256": "928db4bfbd17cd9b66996c93d1a8674dba630c522c1da1891d4752ffb9959fee"
+    },
+    "templates/attestation/verifier/firmware-review.mjs.template": {
+      "template_sha256": "75779811cf4ab1c8b6b40674a744889c349edac9b38545f9cc78328493a92192"
+    },
+    "templates/attestation/device-approval-store.mjs.template": {
+      "template_sha256": "4c5b753971aeb8afb62ff98287e989fac37c9e66fb35b2d3f482770e9d1dcd5b"
+    },
+    "templates/attestation/device-approval-store.node-test.mjs.template": {
+      "template_sha256": "cafd812c79a7a0912e6a989d66e5fcabb11e29253b51c79a4a07a9357895bd03"
+    },
+    "templates/attestation/verifier/version-decisions.mjs.template": {
+      "template_sha256": "98ca8f196212f42a84b6687e34a48843cb9ebc5a7e45d8b1d16b0cf24dc3e0c8"
+    },
+    "templates/attestation/version-review-service.mjs.template": {
+      "template_sha256": "f1fe193fbb6cb646c15886b02a994bc3d88770ecf50bd1637aa10a09141e035a"
+    },
+    "templates/attestation/verifier/inference-review.mjs.template": {
+      "template_sha256": "37cfc4942b6dc243e232656c782896bb6f1df800a25ab033429900db9ba32513"
     }
   }
 }

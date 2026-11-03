@@ -71,7 +71,10 @@ def render(config, output, *, test_only=False):
         target.chmod(0o600)
     verifier = output / "attestation/verifier"
     inputs = json.loads((verifier / "inputs.json").read_text())
-    for name, key in [("verifier-core.mjs", "coreSha256"), ("vcek-bindings.mjs", "vcekBindingSha256"), ("policy.json", "publicPolicySha256")]:
+    for name, key in [("verifier-core.mjs", "coreSha256"), ("vcek-bindings.mjs", "vcekBindingSha256"), ("policy.json", "publicPolicySha256"),
+                      ("google-firmware.mjs", "googleFirmwareSha256"), ("firmware-review.mjs", "firmwareReviewSha256"),
+                      ("inference-review.mjs", "inferenceReviewSha256"),
+                      ("version-decisions.mjs", "versionDecisionsSha256")]:
         inputs[key] = hashlib.sha256((verifier / name).read_bytes()).hexdigest()
     (verifier / "inputs.json").write_text(json.dumps(inputs, indent=2) + "\n")
     (output / "attestation/activation-plan.json").write_text(json.dumps({"node_path": str(node), "node_sha256": config["node_sha256"]}, indent=2) + "\n")

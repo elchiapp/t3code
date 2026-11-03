@@ -2,6 +2,16 @@ import type { AttestationRequest, AttestationStatus, DesktopBridge } from "@t3to
 import * as Effect from "effect/Effect";
 export { withClientAttestationThread } from "./commands.ts";
 export { attestationReport, type AttestationProvider } from "./report.ts";
+export {
+  canReviewAttestationVersions,
+  reviewAttestationVersions,
+  decideAttestationVersion,
+  registerDeviceVersionOperations,
+  canConfigureAttestationAuthentication,
+  configureAttestationAuthentication,
+  type DeviceVersionOperations,
+} from "./versions.ts";
+export { createDeviceApprovalController, type DeviceVersionDecisionRecord } from "./approvals.ts";
 
 const REQUIRED_CHECKS = [
   "hardware",
@@ -86,6 +96,10 @@ export class ClientAttestationGate {
       this.emit(entry);
       this.schedule(origin, entry);
     }
+  }
+
+  invalidate(): void {
+    this.setDeviceVerifier(this.verify);
   }
 
   setOverrideConfirmation(
@@ -380,3 +394,5 @@ export const clientAttestation = new ClientAttestationGate(async (request) => {
     );
   return bridge.getAttestationStatus(request);
 });
+
+desktopBridge()?.onAttestationVersionsChanged?.(() => clientAttestation.invalidate());

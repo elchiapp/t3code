@@ -75,6 +75,18 @@ function unwrapEnsureSshEnvironmentResult(result: unknown) {
 contextBridge.exposeInMainWorld("desktopBridge", {
   getAttestationStatus: (request) =>
     ipcRenderer.invoke(IpcChannels.GET_ATTESTATION_STATUS_CHANNEL, request),
+  getAttestationVersionReviews: (request) =>
+    ipcRenderer.invoke(IpcChannels.GET_ATTESTATION_VERSION_REVIEWS_CHANNEL, request),
+  decideAttestationVersion: (decision) =>
+    ipcRenderer.invoke(IpcChannels.DECIDE_ATTESTATION_VERSION_CHANNEL, decision),
+  configureAttestationAuthentication: () =>
+    ipcRenderer.invoke(IpcChannels.CONFIGURE_ATTESTATION_AUTHENTICATION_CHANNEL),
+  onAttestationVersionsChanged: (listener) => {
+    const receive = () => listener();
+    ipcRenderer.on(IpcChannels.ATTESTATION_VERSIONS_CHANGED_CHANNEL, receive);
+    return () =>
+      ipcRenderer.removeListener(IpcChannels.ATTESTATION_VERSIONS_CHANGED_CHANNEL, receive);
+  },
   getAppBranding: () => {
     const result = ipcRenderer.sendSync(IpcChannels.GET_APP_BRANDING_CHANNEL);
     if (typeof result !== "object" || result === null) {

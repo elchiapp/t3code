@@ -1,6 +1,18 @@
 import {newChallenge,hardwareProof,inferenceProof,boundedJson} from './crypto-verifier.mjs';
 import {peerKey,commitment,MODEL_ORIGIN,PROOF_ORIGIN} from './endpoint-binding.mjs';
 
+export async function collectHardwareInput(initial){
+  initial=initial??await newChallenge();
+  const tlsSpkiSha256=await peerKey();
+  const challenge={...initial,nonce:commitment(initial.nonce,tlsSpkiSha256)};
+  const evidence=await boundedJson(await fetch(PROOF_ORIGIN+'/proof',{method:'POST',headers:{'content-type':'application/json'},
+    body:JSON.stringify({version:1,nonce:initial.nonce,tlsSpkiSha256,modelOrigin:MODEL_ORIGIN,challenge}),
+    redirect:'error',signal:AbortSignal.timeout(20000)}));
+  if(evidence.version!==1||evidence.modelOrigin!==MODEL_ORIGIN||evidence.tlsSpkiSha256!==tlsSpkiSha256)
+    throw Error('The endpoint commitment differs from the selected TLS key');
+  return {challenge,evidence,tlsSpkiSha256};
+}
+
 export async function collectEvidence(){
   const initial=await newChallenge();const checks={
     proxy_workload:{state:'not_configured',detail:'This Ubuntu VM does not provide an approved proxy-software measurement.'},
@@ -10,11 +22,9 @@ export async function collectEvidence(){
   let tlsSpkiSha256;
   const hardware=(async()=>{
     try{
-      tlsSpkiSha256=await peerKey();
-      const challenge={...initial,nonce:commitment(initial.nonce,tlsSpkiSha256)};
-      const evidence=await boundedJson(await fetch(PROOF_ORIGIN+'/proof',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({version:1,nonce:initial.nonce,tlsSpkiSha256,modelOrigin:MODEL_ORIGIN,challenge}),redirect:'error',signal:AbortSignal.timeout(20000)}));
-      if(evidence.version!==1||evidence.modelOrigin!==MODEL_ORIGIN||evidence.tlsSpkiSha256!==tlsSpkiSha256)throw Error('The endpoint commitment differs from the selected TLS key');
-      checks.hardware=await hardwareProof(challenge,{snp:evidence.snp});
+      const input=await collectHardwareInput(initial);
+      const {challenge,evidence}=input;tlsSpkiSha256=input.tlsSpkiSha256;
+      checks.hardware=await hardwareProof(challenge,{snp:evidence.snp,tlsSpkiSha256});
       checks.tls_key_commitment={state:'verified',detail:'The signed quote commits to the selected HTTPS key. This does not prove measured software or exclusive key custody.'};
     }catch(error){checks.hardware={state:'failed',detail:'No accepted fresh hardware proof: '+error.message};checks.tls_key_commitment={state:'unavailable',detail:'No accepted hardware commitment to the inference connection key.'};}
   })();

@@ -4,6 +4,7 @@ import type { AttestationStatus } from "@t3tools/contracts";
 import { attestationReport, type AttestationProvider } from "@t3tools/client-runtime/attestation";
 import { AppText as Text } from "../../components/ui/AppText";
 import { Sheet } from "../../components/ui/Sheet";
+import { VersionReview } from "./VersionReview";
 
 export function AttestationIndicator({
   status,
@@ -119,6 +120,11 @@ export function AttestationIndicator({
             >
               <Text className="text-center font-semibold">Check again</Text>
             </Pressable>
+            <VersionReview
+              key={status.targets?.vmOrigin ?? status.origin}
+              origin={status.targets?.vmOrigin ?? status.origin}
+              onChanged={retry}
+            />
           </ScrollView>
         </Sheet>
       )}

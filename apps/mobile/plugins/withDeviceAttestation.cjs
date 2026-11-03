@@ -29,6 +29,8 @@ module.exports = function withDeviceAttestation(config) {
   }
   config = withInfoPlist(config, (next) => {
     next.modResults.T3AttestationPolicy = iosPolicy;
+    next.modResults.NSFaceIDUsageDescription =
+      "Use Face ID to approve the exact confidential-computing build you reviewed.";
     const ats = next.modResults.NSAppTransportSecurity ?? {};
     ats.NSAllowsArbitraryLoads = false;
     ats.NSAllowsArbitraryLoadsInWebContent = false;

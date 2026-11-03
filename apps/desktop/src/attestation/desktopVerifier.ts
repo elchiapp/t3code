@@ -49,9 +49,21 @@ export function createDesktopVerifier(services: {
     });
     let policy: DeviceAttestationPolicy;
     try {
-      policy = decodeDevicePolicy(await services.readPolicy());
+      const raw = await services.readPolicy();
+      if (raw === null)
+        return {
+          ...failed("unavailable", "Device verification is not configured."),
+          checks: {
+            environment_connection: { state: "not_configured" },
+            inference: { state: "not_configured" },
+          },
+        };
+      policy = decodeDevicePolicy(raw);
     } catch {
-      return failed("unavailable", "Device verification is not configured.");
+      return {
+        ...failed("failed", "The device verification policy is invalid or could not be read."),
+        checks: { configuration: { state: "failed" } },
+      };
     }
     const targets = {
       vmOrigin:
@@ -70,7 +82,12 @@ export function createDesktopVerifier(services: {
     try {
       const origin = originOf(request.origin);
       if (request.origin !== origin || !policy.allowedEnvironmentOrigins.includes(origin))
-        return failure("unavailable", "Verification is not configured for this environment.");
+        return {
+          ...failure("unavailable", "Verification is not configured for this environment."),
+          checks: {
+            environment_connection: { state: "not_configured" },
+          },
+        };
       const verifier = new URL(policy.verifierOrigin);
       // The VM cannot choose a verifier or supply a ready flag for the client.
       if (
@@ -116,6 +133,40 @@ export function createDesktopVerifier(services: {
         proof.modelOrigin === policy.modelOrigin &&
         /^[a-f0-9]{64}$/.test(proof.tlsSpkiSha256 ?? "") &&
         (policy.tlsSpkiSha256 === undefined || proof.tlsSpkiSha256 === policy.tlsSpkiSha256);
+      const target = new URL(origin);
+      const connectionVerified =
+        fresh && targetMatches && proof.checks.tls_key_commitment?.state === "verified";
+      if (
+        connectionVerified &&
+        target.protocol === "https:" &&
+        (await services.peerKey(origin)) !== proof.tlsSpkiSha256
+      )
+        return {
+          ...failure("failed", "The environment connection key does not match the verified VM."),
+          checks: {
+            ...proof.checks,
+            environment_connection: { state: "failed", detail: "TLS key mismatch" },
+          },
+        };
+      if (
+        target.protocol !== "https:" &&
+        !["127.0.0.1", "localhost", "[::1]"].includes(target.hostname)
+      )
+        return failure("failed", "A remote environment requires HTTPS.");
+      if (connectionVerified)
+        proof = {
+          ...proof,
+          checks: {
+            ...proof.checks,
+            environment_connection: {
+              state: "verified",
+              detail:
+                target.protocol === "https:"
+                  ? "Selected environment TLS key matches the VM proof"
+                  : "Explicitly trusted loopback environment",
+            },
+          },
+        };
       if (
         !proof.ready ||
         !fresh ||
@@ -138,6 +189,8 @@ export function createDesktopVerifier(services: {
               ? "A changed TEE build requires approval. Open Review versions and confirm with system authentication."
               : "Attestation failed. Sending requires an explicit override.",
           ),
+          verifiedAt: fresh && targetMatches ? (proof.verifiedAt ?? null) : null,
+          expiresAt: fresh && targetMatches ? (proof.expiresAt ?? null) : null,
           checks:
             fresh && targetMatches
               ? proof.checks
@@ -150,19 +203,6 @@ export function createDesktopVerifier(services: {
                   ]),
                 ),
         };
-      }
-      const target = new URL(origin);
-      if (target.protocol === "https:") {
-        if ((await services.peerKey(origin)) !== proof.tlsSpkiSha256)
-          return {
-            ...failure("failed", "The environment connection key does not match the verified VM."),
-            checks: {
-              ...proof.checks,
-              environment_connection: { state: "failed", detail: "TLS key mismatch" },
-            },
-          };
-      } else if (!["127.0.0.1", "localhost", "[::1]"].includes(target.hostname)) {
-        return failure("failed", "A remote environment requires HTTPS.");
       }
       return {
         origin,

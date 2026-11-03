@@ -19,6 +19,10 @@ function result(state?: string): string {
       return "Verified";
     case "failed":
       return "Failed";
+    case "not_offered":
+      return "Not offered";
+    case "not_configured":
+      return "Not configured";
     case "checking":
       return "Checking";
     case "approval_required":
@@ -88,41 +92,50 @@ export function attestationReport(
       detail: status.checks[key]?.detail,
     };
   };
-  const platformRows = local
+  const unconfiguredEnvironment = status.checks.environment_connection?.state === "not_configured";
+  const platformRows = unconfiguredEnvironment
     ? [
         row(
           "environment_connection",
-          "Local connection",
-          "Agents and tools run on this device. A local connection is not hardware attestation.",
+          "Environment attestation",
+          "No trusted attestation verifier is configured for this environment. This is not a failed verification.",
         ),
       ]
-    : [
-        row(
-          "environment_connection",
-          "Environment connection",
-          "Checks that this connection reaches the paired environment.",
-        ),
-        row(
-          "hardware",
-          "VM hardware",
-          "Checks the VM hardware signature, fresh challenge and approved launch and firmware policy.",
-        ),
-        row(
-          "tls_key_commitment",
-          "Connection key",
-          "Checks that the VM hardware proof commits to the key used for this encrypted connection.",
-        ),
-        row(
-          "proxy_workload",
-          "VM software",
-          "The operating system, agents and proxy inside this VM are trusted. Their application code is not independently measured.",
-        ),
-        row(
-          "key_custody",
-          "Exclusive key custody",
-          "The trusted VM manages its private keys. Separate proof that they were never copied is outside the current scope.",
-        ),
-      ];
+    : local
+      ? [
+          row(
+            "environment_connection",
+            "Local connection",
+            "Agents and tools run on this device. A local connection is not hardware attestation.",
+          ),
+        ]
+      : [
+          row(
+            "environment_connection",
+            "Environment connection",
+            "Checks that this connection reaches the paired environment.",
+          ),
+          row(
+            "hardware",
+            "VM hardware",
+            "Checks the VM hardware signature, fresh challenge and approved launch and firmware policy.",
+          ),
+          row(
+            "tls_key_commitment",
+            "Connection key",
+            "Checks that the VM hardware proof commits to the key used for this encrypted connection.",
+          ),
+          row(
+            "proxy_workload",
+            "VM software",
+            "The operating system, agents and proxy inside this VM are trusted. Their application code is not independently measured.",
+          ),
+          row(
+            "key_custody",
+            "Exclusive key custody",
+            "The trusted VM manages its private keys. Separate proof that they were never copied is outside the current scope.",
+          ),
+        ];
   const inferenceRows: Row[] = directService
     ? [
         {
@@ -171,11 +184,13 @@ export function attestationReport(
         ];
   const allVerified =
     canSend && [...platformRows, ...inferenceRows].every((item) => item.result === "Verified");
-  const platformSummary = local
-    ? "Local device. No confidential-VM attestation applies to this environment."
-    : platformPassed
-      ? "Required VM hardware and connection checks passed. Software inside this VM is trusted."
-      : "VM hardware or connection verification has not passed. See the individual results below.";
+  const platformSummary = unconfiguredEnvironment
+    ? "Attestation is not configured for this environment. Messages can be sent without attestation."
+    : local
+      ? "Local device. No confidential-VM attestation applies to this environment."
+      : platformPassed
+        ? "Required VM hardware and connection checks passed. Software inside this VM is trusted."
+        : "VM hardware or connection verification has not passed. See the individual results below.";
   const contextualLabel = provider
     ? `${local ? "Local device" : platformPassed ? "VM verified" : "VM not verified"} · ${
         directService

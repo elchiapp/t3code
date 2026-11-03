@@ -161,13 +161,13 @@ describe("desktop device verifier boundary", () => {
     expect(local.targets?.proxyOrigin).toBe(policy.modelOrigin);
     expect(local.targets?.inferenceProviderIds).toEqual(["tinfoil"]);
   });
-  it("missing policy never silently disables the gate", async () => {
+  it("unreadable policy remains a failure rather than missing attestation support", async () => {
     const verify = createDesktopVerifier({
       ...services(),
       readPolicy: async () => {
         throw new Error("missing");
       },
     });
-    expect((await verify({ origin })).phase).toBe("unavailable");
+    expect((await verify({ origin })).phase).toBe("failed");
   });
 });

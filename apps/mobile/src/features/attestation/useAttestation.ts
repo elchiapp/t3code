@@ -15,6 +15,7 @@ export function useAttestation(
   environmentId: EnvironmentId,
   threadId: string | null = null,
   instanceId?: string,
+  observeOnly = false,
 ) {
   const connection = usePreparedConnection(environmentId);
   let origin = "";
@@ -25,9 +26,13 @@ export function useAttestation(
   const subscribe = useCallback(
     (listener: () => void) => {
       if (origin && threadId) clientAttestation.setInferenceProvider(origin, threadId, instanceId);
-      return origin ? clientAttestation.subscribe(origin, listener) : () => {};
+      return origin
+        ? observeOnly
+          ? clientAttestation.observe(origin, listener)
+          : clientAttestation.subscribe(origin, listener)
+        : () => {};
     },
-    [origin, threadId, instanceId],
+    [origin, threadId, instanceId, observeOnly],
   );
   const snapshot = useCallback(
     () => (origin ? clientAttestation.get(origin, instanceId) : noEnvironment),
@@ -48,7 +53,7 @@ export function useAttestation(
       (await clientAttestation.authorizeWithOverride(origin, threadId, instanceId)).allowed,
     isCurrent: () =>
       origin !== "" &&
-      (clientAttestation.canSend(origin, instanceId) ||
+      (clientAttestation.canProceed(origin, instanceId) ||
         (threadId !== null && clientAttestation.hasOverride(origin, threadId))),
     revokeOverride: () => {
       if (origin && threadId) clientAttestation.revokeOverride(origin, threadId);

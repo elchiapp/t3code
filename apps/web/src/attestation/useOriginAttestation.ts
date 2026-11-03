@@ -19,6 +19,7 @@ export function useOriginAttestation(
   baseUrl: string | null,
   threadId: string | null = null,
   instanceId?: string,
+  observeOnly = false,
 ) {
   let origin = "";
   try {
@@ -26,7 +27,11 @@ export function useOriginAttestation(
   } catch {}
   const subscribe = (listener: () => void) => {
     if (origin && threadId) clientAttestation.setInferenceProvider(origin, threadId, instanceId);
-    return origin ? clientAttestation.subscribe(origin, listener) : () => {};
+    return origin
+      ? observeOnly
+        ? clientAttestation.observe(origin, listener)
+        : clientAttestation.subscribe(origin, listener)
+      : () => {};
   };
   const snapshot = () => (origin ? clientAttestation.get(origin, instanceId) : noEnvironment);
   const status = useSyncExternalStore(subscribe, snapshot, () => noEnvironment);
@@ -43,7 +48,7 @@ export function useOriginAttestation(
     overrideAccepted,
     requiresOverride:
       origin !== "" &&
-      !canSend &&
+      !clientAttestation.canProceed(origin, instanceId) &&
       !overrideAccepted &&
       status.phase !== "checking" &&
       !requiresVersionApproval(status),
@@ -51,7 +56,7 @@ export function useOriginAttestation(
       origin !== "" &&
       (await clientAttestation.authorizeWithOverride(origin, threadId, instanceId)).allowed,
     isCurrent: () =>
-      (origin !== "" && clientAttestation.canSend(origin, instanceId)) ||
+      (origin !== "" && clientAttestation.canProceed(origin, instanceId)) ||
       (origin !== "" && threadId !== null && clientAttestation.hasOverride(origin, threadId)),
     retry: () => {
       if (origin) void clientAttestation.refresh(origin);

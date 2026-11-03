@@ -76,10 +76,12 @@ describe("phone-side verification", () => {
     expect(result.checks.hardware?.state).toBe("failed");
     expect(result.checks.inference?.state).toBe("verified");
   });
-  it("rejects an unapproved origin before requesting proof", async () => {
+  it("reports an unconfigured environment without reusing the VM proof", async () => {
     const { operations, calls } = fixture();
     const verify = createMobileDeviceVerifier(operations, () => 0);
-    expect((await verify({ origin: "https://attacker.example" })).phase).toBe("failed");
+    const result = await verify({ origin: "https://other.example" });
+    expect(result.phase).toBe("unavailable");
+    expect(result.checks.environment_connection?.state).toBe("not_configured");
     expect(calls.collection).toBe(0);
   });
   it("requires actual native transport protection even with a cached receipt", async () => {

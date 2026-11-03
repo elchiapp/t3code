@@ -98,6 +98,7 @@ const make = Effect.gen(function* () {
     readPolicy: () =>
       runPromise(
         Effect.gen(function* () {
+          if (!(yield* files.exists(policyPath))) return null;
           const info = yield* files.stat(policyPath);
           if (
             info.type !== "File" ||

@@ -42,11 +42,89 @@ describe("client attestation gate", () => {
     gate.onVersionReviewRequired(() => {
       reviews++;
     });
-    gate.setOverrideConfirmation(async () => true);
+    let confirmations = 0;
+    gate.setOverrideConfirmation(async () => {
+      confirmations++;
+      return true;
+    });
     await gate.refresh(local);
     expect((await gate.authorizeWithOverride(local, "thread-1", "codex")).allowed).toBe(true);
     expect(reviews).toBe(0);
+    expect(confirmations).toBe(0);
+    expect(gate.hasOverride(local, "thread-1")).toBe(false);
+    expect(gate.canProceed(local, "codex")).toBe(true);
   });
+  it("allows missing inference coverage without consent but retains fresh VM checks", async () => {
+    const targets = {
+      vmOrigin: origin,
+      proxyOrigin: "https://host.example:8447",
+      inferenceProviderIds: ["tinfoil"],
+    };
+    let current: AttestationStatus = {
+      ...good(),
+      phase: "failed",
+      targets,
+      checks: { ...good().checks, inference: { state: "failed" } },
+    };
+    let confirmations = 0;
+    let clock = 0;
+    const gate = new ClientAttestationGate(
+      async () => current,
+      () => clock,
+      () => clock,
+    );
+    gate.setOverrideConfirmation(async () => {
+      confirmations++;
+      return false;
+    });
+    await gate.refresh(origin);
+    expect((await gate.authorizeWithOverride(origin, "thread-1", "codex")).allowed).toBe(true);
+    expect(gate.canSend(origin, "codex")).toBe(false);
+    expect(gate.canProceed(origin, "codex")).toBe(true);
+    expect(confirmations).toBe(0);
+    clock = 60_001;
+    expect(gate.canProceed(origin, "codex")).toBe(false);
+    clock = 0;
+    current = { ...current, checks: { ...current.checks, hardware: { state: "failed" } } };
+    await gate.refresh(origin);
+    expect((await gate.authorizeWithOverride(origin, "thread-1", "codex")).allowed).toBe(false);
+    expect(gate.canProceed(origin, "codex")).toBe(false);
+  });
+
+  it("does not treat an offline configured TEE as missing support", async () => {
+    const targets = {
+      vmOrigin: origin,
+      proxyOrigin: "https://host.example:8447",
+      inferenceProviderIds: ["tinfoil"],
+    };
+    const gate = make(async () => ({
+      ...unavailableAttestation(origin),
+      phase: "failed",
+      targets,
+    }));
+    await gate.refresh(origin);
+    expect(gate.get(origin, "tinfoil").checks.inference?.state).toBe("unavailable");
+    expect(gate.canProceed(origin, "tinfoil")).toBe(false);
+    expect((await gate.authorizeWithOverride(origin, "thread-1", "tinfoil")).allowed).toBe(false);
+  });
+
+  it("allows explicitly unconfigured environments without claiming verified attestation", async () => {
+    const gate = make(async () => ({
+      ...unavailableAttestation(origin),
+      checks: {
+        environment_connection: { state: "not_configured" },
+        inference: { state: "not_configured" },
+      },
+    }));
+    gate.setOverrideConfirmation(async () => {
+      throw new Error("No confirmation expected");
+    });
+    await gate.refresh(origin);
+    expect((await gate.authorizeWithOverride(origin, "thread-1")).allowed).toBe(true);
+    expect(gate.canSend(origin)).toBe(false);
+    expect(gate.hasOverride(origin, "thread-1")).toBe(false);
+  });
+
   it("does not allow conversation consent to authorize an unapproved TEE build", async () => {
     for (const component of ["hardware", "inference"] as const) {
       const changed: AttestationStatus = {
@@ -74,6 +152,8 @@ describe("client attestation gate", () => {
       expect(gate.hasOverride(origin, "thread-1")).toBe(false);
       expect(confirmations).toBe(0);
       expect(reviews).toEqual([origin]);
+      if (component === "hardware")
+        expect((await gate.authorizeWithOverride(origin, "thread-2", "codex")).allowed).toBe(false);
     }
   });
 

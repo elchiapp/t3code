@@ -62,18 +62,21 @@ export function createMobileDeviceVerifier(
     try {
       const url = new URL(request.origin);
       if (
-        url.protocol !== "https:" ||
+        !["http:", "https:"].includes(url.protocol) ||
         url.username ||
         url.password ||
         url.origin !== request.origin
       )
-        return failure("The VM connection must use its approved HTTPS origin.");
+        return failure("The environment must use a valid HTTP or HTTPS origin.");
       origin = url.origin;
-      if (
-        !policy.environmentOrigins.includes(origin) ||
-        !/^[a-f0-9]{64}$/.test(policy.tlsSpkiSha256)
-      )
-        return failure("This environment has no trusted device policy.");
+      if (!policy.environmentOrigins.includes(origin))
+        return {
+          ...failure("Attestation is not configured for this environment."),
+          phase: "unavailable",
+          checks: { environment_connection: { state: "not_configured" } },
+        };
+      if (url.protocol !== "https:" || !/^[a-f0-9]{64}$/.test(policy.tlsSpkiSha256))
+        return failure("The VM connection must use its approved HTTPS origin and key.");
       if (!(await operations.transportProtected()))
         return failure(
           "Native connection protection is unavailable. Sending requires confirmation.",
@@ -184,6 +187,9 @@ export function createMobileDeviceVerifier(
                 ? "A changed TEE build requires approval. Open Review versions and confirm with system authentication."
                 : "Required platform or inference checks did not pass. Sending requires confirmation.",
             ),
+            verifiedAt: freshPlatform ? now() : null,
+            expiresAt:
+              platform.status === "fulfilled" && freshPlatform ? platform.value.expiresAt : null,
             checks,
           };
         accepted = {

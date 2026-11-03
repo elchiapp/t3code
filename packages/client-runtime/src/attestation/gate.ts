@@ -33,6 +33,31 @@ export function requiresVersionApproval(status: AttestationStatus): boolean {
   );
 }
 
+const absent = (state?: string) => state === "not_offered" || state === "not_configured";
+const localOrigin = (origin: string) => {
+  try {
+    return ["127.0.0.1", "localhost", "[::1]"].includes(new URL(origin).hostname);
+  } catch {
+    return false;
+  }
+};
+
+export function unattestedReason(status: AttestationStatus): string | undefined {
+  if (
+    status.phase === "checking" &&
+    !status.targets &&
+    status.checks.inference?.state !== "not_offered"
+  )
+    return undefined;
+  if (status.checks.inference?.state === "not_offered")
+    return "The selected provider does not offer TEE attestation.";
+  if (status.checks.inference?.state === "not_configured")
+    return "Attestation is not configured for the selected provider.";
+  if (absent(status.checks.environment_connection?.state))
+    return "Attestation is not configured for this environment.";
+  return undefined;
+}
+
 const protectedTarget = (status: AttestationStatus) =>
   !!status.targets &&
   (status.origin === status.targets.vmOrigin ||
@@ -162,19 +187,30 @@ export class ClientAttestationGate {
     const cached = snapshots.get(instanceId);
     if (cached) return cached;
     const directCloud = instanceId === "codex" || instanceId === "claudeAgent";
+    const configured = status.targets?.inferenceProviderIds.includes(instanceId) === true;
     const inference = status.checks[`inference:${instanceId}`] ?? {
-      state: directCloud ? "not_offered" : "not_configured",
-      detail: directCloud
-        ? "This connection does not offer TEE attestation. This is not a verification failure."
-        : "Independent inference verification is not configured for this provider.",
+      state: configured
+        ? "unavailable"
+        : directCloud
+          ? "not_offered"
+          : status.checks.configuration?.state === "failed"
+            ? "failed"
+            : "not_configured",
+      detail: configured
+        ? "Attestation is configured for this provider, but its verification is unavailable."
+        : directCloud
+          ? "This connection does not offer TEE attestation. This is not a verification failure."
+          : "Independent inference verification is not configured for this provider.",
     };
     const uncovered = status.phase === "verified" && inference.state !== "verified";
+    const unusedProxy = localOrigin(status.origin) && absent(inference.state);
     const snapshot: AttestationStatus = {
       ...status,
-      phase: uncovered ? "unavailable" : status.phase,
-      message: uncovered
-        ? (inference.detail ?? "Inference verification did not pass for the selected provider.")
-        : status.message,
+      phase: uncovered || unusedProxy ? "unavailable" : status.phase,
+      message:
+        uncovered || unusedProxy
+          ? (inference.detail ?? "Inference verification did not pass for the selected provider.")
+          : status.message,
       checks: { ...status.checks, inference },
     };
     snapshots.set(instanceId, snapshot);
@@ -203,6 +239,32 @@ export class ClientAttestationGate {
       this.now() < status.expiresAt &&
       this.monotonic() < entry.deadline &&
       REQUIRED_CHECKS.every((key) => status.checks[key]?.state === "verified")
+    );
+  }
+
+  canProceed(origin: string, instanceId?: string): boolean {
+    if (this.canSend(origin, instanceId)) return true;
+    const entry = this.entry(origin);
+    const status = this.providerStatus(entry.status, instanceId);
+    if (!unattestedReason(status) || requiresVersionApproval(status)) return false;
+    if (
+      status.checks.configuration?.state === "failed" &&
+      !(localOrigin(origin) && status.checks.inference?.state === "not_offered")
+    )
+      return false;
+    const platformRequired =
+      !localOrigin(origin) && !absent(status.checks.environment_connection?.state);
+    const inferenceRequired = !absent(status.checks.inference?.state);
+    const required = [
+      ...(platformRequired ? ["hardware", "tls_key_commitment", "environment_connection"] : []),
+      ...(inferenceRequired ? ["hardware", "tls_key_commitment", "inference"] : []),
+    ];
+    if (required.length === 0) return true;
+    return (
+      status.expiresAt !== null &&
+      this.now() < status.expiresAt &&
+      this.monotonic() < entry.deadline &&
+      required.every((key) => status.checks[key]?.state === "verified")
     );
   }
 
@@ -312,6 +374,7 @@ export class ClientAttestationGate {
           verifiedAt: null,
           expiresAt: null,
           checks: {},
+          ...(entry.status.targets ? { targets: entry.status.targets } : {}),
         };
         entry.deadline = 0;
       } finally {
@@ -345,6 +408,8 @@ export class ClientAttestationGate {
       (threadId ? this.threadProviders.get(JSON.stringify([origin, threadId])) : undefined);
     const initial = this.get(origin, provider);
     if (requiresVersionApproval(initial)) return this.versionApprovalBlocked(origin, initial);
+    if (this.canProceed(origin, provider) && unattestedReason(initial) && !protectedTarget(initial))
+      return { status: initial, allowed: true, requiresOverride: false };
     if (threadId && this.hasOverride(origin, threadId, provider)) {
       if (protectedTarget(initial)) await this.refresh(origin, true);
       else void this.refresh(origin, false);
@@ -357,12 +422,15 @@ export class ClientAttestationGate {
       this.confirmOverride &&
       threadId &&
       known.phase !== "checking" &&
+      !protectedTarget(known) &&
       !this.canSend(origin, provider)
     )
       void this.refresh(origin, false);
     else await this.refresh(origin, false);
     const refreshed = this.get(origin, provider);
     if (requiresVersionApproval(refreshed)) return this.versionApprovalBlocked(origin, refreshed);
+    if (this.canProceed(origin, provider) && unattestedReason(refreshed))
+      return { status: refreshed, allowed: true, requiresOverride: false };
     if (
       !this.canSend(origin, provider) &&
       threadId !== null &&
@@ -427,6 +495,15 @@ export class ClientAttestationGate {
     ).catch(() => {});
   }
 
+  observe(origin: string, listener: () => void): () => void {
+    const entry = this.entry(origin);
+    entry.listeners.add(listener);
+    return () => {
+      entry.listeners.delete(listener);
+      if (entry.listeners.size === 0) entry.timer?.abort();
+    };
+  }
+
   subscribe(origin: string, listener: () => void): () => void {
     const entry = this.entry(origin);
     entry.listeners.add(listener);
@@ -446,10 +523,13 @@ function desktopBridge(): DesktopBridge | undefined {
 export const clientAttestation = new ClientAttestationGate(async (request) => {
   const bridge = desktopBridge();
   if (!bridge?.getAttestationStatus)
-    return unavailableAttestation(
-      request.origin,
-      "This client has no trusted device verifier. Sending requires an explicit override.",
-    );
+    return {
+      ...unavailableAttestation(request.origin, "This client has no configured device verifier."),
+      checks: {
+        environment_connection: { state: "not_configured" },
+        inference: { state: "not_configured" },
+      },
+    };
   return bridge.getAttestationStatus(request);
 });
 

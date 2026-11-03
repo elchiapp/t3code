@@ -1,3 +1,4 @@
+import { AttestationWarning } from "../chat/AttestationWarning";
 import { ThreadHoverCard, ThreadHoverCardPopup } from "../ThreadHoverCard";
 import { ThreadTerminalStatusButton } from "../ThreadStatusIndicators";
 import { discardComposerDraft } from "../../lib/discardComposerDraft";
@@ -1038,6 +1039,7 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
       )}
       dir={textDirection(thread.title)}
     >
+      <AttestationWarning environmentId={thread.environmentId} instanceId={modelInstanceId} />
       {thread.title}
     </span>
   );
@@ -1732,6 +1734,10 @@ export const SidebarSearchResultRow = memo(function SidebarSearchResultRow(props
                   thread.titleRegeneration != null && "opacity-55",
                 )}
               >
+                <AttestationWarning
+                  environmentId={thread.environmentId}
+                  instanceId={modelInstanceId}
+                />
                 {thread.title}
               </span>
               <span id={`${props.resultId}-pr`} className="contents">

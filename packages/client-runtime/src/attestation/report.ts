@@ -192,7 +192,7 @@ export function attestationReport(
         ? "Required VM hardware and connection checks passed. Software inside this VM is trusted."
         : "VM hardware or connection verification has not passed. See the individual results below.";
   const contextualLabel = provider
-    ? `${local ? "Local device" : platformPassed ? "VM verified" : "VM not verified"} · ${
+    ? `${local ? "Local device" : unconfiguredEnvironment ? "Environment: not attested" : platformPassed ? "VM verified" : "VM not verified"} · ${
         directService
           ? `${providerName}: no TEE`
           : !covered

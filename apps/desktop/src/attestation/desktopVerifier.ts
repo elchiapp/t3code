@@ -133,8 +133,9 @@ export function createDesktopVerifier(services: {
         return {
           ...failure(
             "failed",
-            proof.checks.inference?.state === "approval_required"
-              ? "Tinfoil release approval is required."
+            proof.checks.hardware?.state === "approval_required" ||
+              proof.checks.inference?.state === "approval_required"
+              ? "A changed TEE build requires approval. Open Review versions and confirm with system authentication."
               : "Attestation failed. Sending requires an explicit override.",
           ),
           checks:

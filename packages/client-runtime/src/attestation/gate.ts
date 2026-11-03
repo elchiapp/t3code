@@ -22,6 +22,24 @@ const REQUIRED_CHECKS = [
 ] as const;
 const MAX_LEASE_MS = 60_000;
 
+export function requiresVersionApproval(status: AttestationStatus): boolean {
+  const inference = status.checks.inference?.state;
+  const environmentNeedsHardware = !status.targets || status.origin === status.targets.vmOrigin;
+  const usesProxy = inference !== "not_offered" && inference !== "not_configured";
+  return (
+    inference === "approval_required" ||
+    (status.checks.hardware?.state === "approval_required" &&
+      (environmentNeedsHardware || usesProxy))
+  );
+}
+
+const protectedTarget = (status: AttestationStatus) =>
+  !!status.targets &&
+  (status.origin === status.targets.vmOrigin ||
+    !["not_offered", "not_configured"].includes(
+      status.checks.inference?.state ?? "not_configured",
+    ));
+
 export function normalizeAttestationOrigin(value: string): string {
   const url = new URL(value);
   if (!["http:", "https:"].includes(url.protocol) || url.username || url.password) {
@@ -59,6 +77,7 @@ export interface AttestationConfirmation {
 }
 
 export class ClientAttestationGate {
+  private readonly versionReviewListeners = new Set<(origin: string) => void>();
   private readonly entries = new Map<string, Entry>();
   private readonly overriddenThreads = new Map<string, Set<string>>();
   private verify: (request: AttestationRequest) => Promise<AttestationStatus>;
@@ -187,8 +206,35 @@ export class ClientAttestationGate {
     );
   }
 
-  hasOverride(origin: string, threadId: string): boolean {
-    return this.overriddenThreads.get(origin)?.has(threadId) === true;
+  hasOverride(origin: string, threadId: string, instanceId?: string): boolean {
+    const provider = instanceId ?? this.threadProviders.get(JSON.stringify([origin, threadId]));
+    return (
+      !requiresVersionApproval(this.providerStatus(this.entry(origin).status, provider)) &&
+      this.overriddenThreads.get(origin)?.has(threadId) === true
+    );
+  }
+
+  onVersionReviewRequired(listener: (origin: string) => void): () => void {
+    this.versionReviewListeners.add(listener);
+    return () => {
+      this.versionReviewListeners.delete(listener);
+    };
+  }
+
+  private versionApprovalBlocked(
+    origin: string,
+    status: AttestationStatus,
+  ): AttestationAuthorization {
+    for (const listener of this.versionReviewListeners) listener(origin);
+    return {
+      status: {
+        ...status,
+        message:
+          "A changed TEE build needs approval. Open Review versions and confirm with system authentication.",
+      },
+      allowed: false,
+      requiresOverride: false,
+    };
   }
 
   override(origin: string, threadId: string): void {
@@ -297,9 +343,13 @@ export class ClientAttestationGate {
     const provider =
       instanceId ??
       (threadId ? this.threadProviders.get(JSON.stringify([origin, threadId])) : undefined);
-    if (threadId && this.hasOverride(origin, threadId)) {
+    const initial = this.get(origin, provider);
+    if (requiresVersionApproval(initial)) return this.versionApprovalBlocked(origin, initial);
+    if (threadId && this.hasOverride(origin, threadId, provider)) {
+      if (protectedTarget(initial)) await this.refresh(origin, true);
+      else void this.refresh(origin, false);
       const status = this.get(origin, provider);
-      void this.refresh(origin, false);
+      if (requiresVersionApproval(status)) return this.versionApprovalBlocked(origin, status);
       return { status, allowed: true, requiresOverride: false };
     }
     const known = this.get(origin, provider);
@@ -311,11 +361,13 @@ export class ClientAttestationGate {
     )
       void this.refresh(origin, false);
     else await this.refresh(origin, false);
+    const refreshed = this.get(origin, provider);
+    if (requiresVersionApproval(refreshed)) return this.versionApprovalBlocked(origin, refreshed);
     if (
       !this.canSend(origin, provider) &&
       threadId !== null &&
       threadId !== "" &&
-      !this.hasOverride(origin, threadId) &&
+      !this.hasOverride(origin, threadId, provider) &&
       this.confirmOverride
     ) {
       const key = JSON.stringify([origin, threadId]);
@@ -331,27 +383,32 @@ export class ClientAttestationGate {
             status: this.get(origin, provider),
           }).catch(() => false);
           if (!accepted || generation !== this.generation) return false;
+          if (requiresVersionApproval(this.get(origin, provider))) return false;
           this.override(origin, threadId);
           return true;
         });
         this.pendingConfirmations.set(key, pending);
       }
       try {
-        if (!(await pending))
+        if (!(await pending)) {
+          if (requiresVersionApproval(this.get(origin, provider)))
+            return this.versionApprovalBlocked(origin, this.get(origin, provider));
           return {
             status: this.get(origin, provider),
             allowed: false,
             requiresOverride: !this.canSend(origin, provider),
             cancelled: true,
           };
+        }
       } finally {
         if (this.pendingConfirmations.get(key) === pending) this.pendingConfirmations.delete(key);
       }
     }
     const status = this.get(origin, provider);
+    if (requiresVersionApproval(status)) return this.versionApprovalBlocked(origin, status);
     const allowed =
       this.canSend(origin, provider) ||
-      (threadId !== null && threadId !== "" && this.hasOverride(origin, threadId));
+      (threadId !== null && threadId !== "" && this.hasOverride(origin, threadId, provider));
     return { status, allowed, requiresOverride: !allowed };
   }
 

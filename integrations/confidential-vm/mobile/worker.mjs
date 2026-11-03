@@ -160,8 +160,12 @@ const operations = {
       decisions: readDecisions(decisions),
       now: Date.now(),
     });
-    if (!result.approved) throw Error("VM firmware requires an exact-build approval in T3.");
-    return true;
+    return {
+      state: result.approved ? "verified" : "approval_required",
+      detail: result.approved
+        ? "Fresh VM hardware and approved firmware verified."
+        : "VM firmware requires an exact-build approval with system authentication in T3.",
+    };
   },
   async reviewFirmware({ origin, challenge, evidence, decisions, firmwareEvidence }) {
     return (

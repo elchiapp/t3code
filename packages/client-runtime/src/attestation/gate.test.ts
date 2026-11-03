@@ -24,6 +24,99 @@ const make = (verify: ConstructorParameters<typeof ClientAttestationGate>[0]) =>
   );
 
 describe("client attestation gate", () => {
+  it("does not require an unused proxy's update approval for a local provider without a TEE", async () => {
+    const local = "http://127.0.0.1:3773";
+    const gate = make(async () => ({
+      ...good(),
+      origin: local,
+      phase: "failed",
+      targets: {
+        vmOrigin: origin,
+        proxyOrigin: "https://host.example:8447",
+        inferenceProviderIds: ["tinfoil"],
+      },
+      checks: { ...good().checks, hardware: { state: "approval_required" } },
+    }));
+    gate.setInferenceProvider(local, "thread-1", "codex");
+    let reviews = 0;
+    gate.onVersionReviewRequired(() => {
+      reviews++;
+    });
+    gate.setOverrideConfirmation(async () => true);
+    await gate.refresh(local);
+    expect((await gate.authorizeWithOverride(local, "thread-1", "codex")).allowed).toBe(true);
+    expect(reviews).toBe(0);
+  });
+  it("does not allow conversation consent to authorize an unapproved TEE build", async () => {
+    for (const component of ["hardware", "inference"] as const) {
+      const changed: AttestationStatus = {
+        ...good(),
+        phase: "failed",
+        message: "Exact-build approval required",
+        targets: {
+          vmOrigin: origin,
+          proxyOrigin: "https://host.example:8447",
+          inferenceProviderIds: ["tinfoil"],
+        },
+        checks: { ...good().checks, [component]: { state: "approval_required" } },
+      };
+      const gate = make(async () => changed);
+      let confirmations = 0;
+      const reviews: string[] = [];
+      gate.onVersionReviewRequired((target) => reviews.push(target));
+      gate.setOverrideConfirmation(async () => {
+        confirmations++;
+        return true;
+      });
+      gate.override(origin, "thread-1");
+      await gate.refresh(origin);
+      expect((await gate.authorizeWithOverride(origin, "thread-1")).allowed).toBe(false);
+      expect(gate.hasOverride(origin, "thread-1")).toBe(false);
+      expect(confirmations).toBe(0);
+      expect(reviews).toEqual([origin]);
+    }
+  });
+
+  it("checks protected TEE targets again before reusing old conversation consent", async () => {
+    const targets = {
+      vmOrigin: origin,
+      proxyOrigin: "https://host.example:8447",
+      inferenceProviderIds: ["tinfoil"],
+    };
+    let current: AttestationStatus = { ...good(), targets };
+    const gate = make(async () => current);
+    await gate.refresh(origin);
+    gate.override(origin, "thread-1");
+    current = {
+      ...current,
+      phase: "failed",
+      checks: { ...current.checks, hardware: { state: "approval_required" } },
+    };
+    expect((await gate.authorizeWithOverride(origin, "thread-1")).allowed).toBe(false);
+  });
+
+  it("does not save plain consent if a new TEE build is detected while its dialog is open", async () => {
+    let current = unavailableAttestation(origin);
+    const gate = make(async () => current);
+    const entered = Promise.withResolvers<void>();
+    const decision = Promise.withResolvers<boolean>();
+    gate.setOverrideConfirmation(async () => {
+      entered.resolve();
+      return decision.promise;
+    });
+    const authorization = gate.authorizeWithOverride(origin, "thread-1");
+    await entered.promise;
+    current = {
+      ...good(),
+      phase: "failed",
+      checks: { ...good().checks, hardware: { state: "approval_required" } },
+    };
+    await gate.refresh(origin);
+    decision.resolve(true);
+    expect((await authorization).allowed).toBe(false);
+    expect(gate.hasOverride(origin, "thread-1")).toBe(false);
+  });
+
   it("moves draft consent to its conversation without authorizing the next draft", async () => {
     const gate = make(async () => unavailableAttestation(origin));
     gate.override(origin, "project-draft");

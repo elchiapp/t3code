@@ -10,11 +10,12 @@ const run = NodeUtil.promisify(NodeChildProcess.execFile);
 const own = NodePath.dirname(NodeURL.fileURLToPath(import.meta.url));
 const repo = NodePath.resolve(own, "../../..");
 const hash = (bytes) => NodeCrypto.createHash("sha256").update(bytes).digest("hex");
-const [appSource, sdk, guardSource, clientPolicyFile, nodeSource, output, identity] =
+const [appSource, sdk, guardSource, clientPolicyFile, nodeSource, outputArgument, identity] =
   process.argv.slice(2);
+const output = NodePath.resolve(outputArgument ?? "");
 if (!identity)
   throw Error("Usage: build.mjs APP SDK GUARD CLIENT_POLICY NODE OUTPUT SIGNING_IDENTITY");
-const release = "0.1.6-turing.9-air1";
+const release = "0.1.6-turing.10-air1";
 if (NodeFS.existsSync(output)) throw Error("Choose a fresh build directory.");
 await NodeFSP.mkdir(output, { recursive: true });
 const source = (await run("git", ["-C", repo, "rev-parse", "HEAD"])).stdout.trim();

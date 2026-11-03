@@ -3,6 +3,7 @@ import {
   clientAttestation,
   normalizeAttestationOrigin,
   unavailableAttestation,
+  requiresVersionApproval,
 } from "@t3tools/client-runtime/attestation";
 import { readLocalApi } from "../localApi";
 
@@ -40,12 +41,17 @@ export function useOriginAttestation(
     status,
     canSend,
     overrideAccepted,
-    requiresOverride: origin !== "" && !canSend && !overrideAccepted && status.phase !== "checking",
+    requiresOverride:
+      origin !== "" &&
+      !canSend &&
+      !overrideAccepted &&
+      status.phase !== "checking" &&
+      !requiresVersionApproval(status),
     authorize: async () =>
       origin !== "" &&
       (await clientAttestation.authorizeWithOverride(origin, threadId, instanceId)).allowed,
     isCurrent: () =>
-      canSend ||
+      (origin !== "" && clientAttestation.canSend(origin, instanceId)) ||
       (origin !== "" && threadId !== null && clientAttestation.hasOverride(origin, threadId)),
     retry: () => {
       if (origin) void clientAttestation.refresh(origin);

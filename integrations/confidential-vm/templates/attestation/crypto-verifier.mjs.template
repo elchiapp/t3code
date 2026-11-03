@@ -96,8 +96,9 @@ export async function hardwareProof(challenge,bundle,now=Date.now()){
   const result=await reviewFirmware({policy,challenge,evidence:{version:1,modelOrigin:proxyOrigin,
     tlsSpkiSha256:bundle.tlsSpkiSha256,snp:bundle.snp},modelOrigin:proxyOrigin,
     tlsSpkiSha256:bundle.tlsSpkiSha256,origin:'{{VM_T3_ORIGIN}}',decisions:currentVersionDecisions(),now});
-  if(!result.approved)throw Error('VM firmware requires an exact-build approval in T3');
-  return {state:'verified',product:result.hardware.productLine,measurement:result.hardware.measurementHex,
+  return {state:result.approved?'verified':'approval_required',
+    detail:result.approved?'Fresh VM hardware and approved firmware verified.':'VM firmware requires an exact-build approval with system authentication in T3.',
+    product:result.hardware.productLine,measurement:result.hardware.measurementHex,
     currentTcb:result.hardware.currentTcbHex,scope:'Hardware and approved boot firmware only; proxy software and key custody are not measured.'};
 }
 export async function boundedJson(response,maxBytes=512*1024){

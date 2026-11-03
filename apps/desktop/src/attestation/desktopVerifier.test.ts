@@ -30,6 +30,21 @@ const services = () => ({
 });
 
 describe("desktop device verifier boundary", () => {
+  it("preserves exact-build approval state and a valid key proof without admitting the request", async () => {
+    const verify = createDesktopVerifier({
+      ...services(),
+      readStatus: async () => ({
+        ...proof(),
+        ready: false,
+        checks: { ...proof().checks, hardware: { state: "approval_required" } },
+      }),
+    });
+    const status = await verify({ origin });
+    expect(status.phase).toBe("failed");
+    expect(status.checks.hardware?.state).toBe("approval_required");
+    expect(status.checks.tls_key_commitment?.state).toBe("verified");
+    expect(status.message).toContain("system authentication");
+  });
   it("checks the actual transport certificate even when a separate probe would pass", async () => {
     const verify = createCertificateVerifier(services());
     expect(await verify("vm.example", "b".repeat(64), true)).toBe(-2);

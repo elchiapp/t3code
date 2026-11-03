@@ -18,7 +18,13 @@ export interface MobileProofOperations {
     readonly expiresAt: number;
   }>;
   readonly collect: (input: unknown) => Promise<unknown>;
-  readonly verifyHardware: (challenge: unknown, evidence: unknown) => Promise<void>;
+  readonly verifyHardware: (
+    challenge: unknown,
+    evidence: unknown,
+  ) => Promise<{
+    readonly state: "verified" | "approval_required";
+    readonly detail?: string;
+  }>;
   readonly verifyInference: () => Promise<{ readonly state: string; readonly detail: string }>;
 }
 
@@ -109,10 +115,10 @@ export function createMobileDeviceVerifier(
               nonce: prepared.nonce,
               challenge: prepared.challenge,
             });
-            await operations.verifyHardware(prepared.challenge, evidence);
+            const hardware = await operations.verifyHardware(prepared.challenge, evidence);
             if (prepared.expiresAt <= now() || !(await operations.transportProtected()))
               throw new Error("VM verification expired or connection protection changed.");
-            return prepared.expiresAt;
+            return { expiresAt: prepared.expiresAt, hardware };
           })(),
           operations.verifyInference(),
         ]);
@@ -127,14 +133,16 @@ export function createMobileDeviceVerifier(
               };
         if (!(await operations.transportProtected()))
           return failure("Native connection protection changed. Sending requires confirmation.");
-        const freshPlatform = platform.status === "fulfilled" && platform.value > now();
+        const freshPlatform = platform.status === "fulfilled" && platform.value.expiresAt > now();
+        const approvedPlatform =
+          freshPlatform &&
+          platform.status === "fulfilled" &&
+          platform.value.hardware.state === "verified";
         const checks: AttestationStatus["checks"] = {
           hardware: freshPlatform
-            ? {
-                state: "verified",
-                detail:
-                  "This device verified the fresh VM hardware signature and approved firmware policy.",
-              }
+            ? platform.status === "fulfilled"
+              ? platform.value.hardware
+              : { state: "failed" }
             : {
                 state: "failed",
                 detail:
@@ -168,10 +176,13 @@ export function createMobileDeviceVerifier(
             detail: "Actual inference routing is not independently proved.",
           },
         };
-        if (!freshPlatform || inference.state !== "verified")
+        if (!approvedPlatform || inference.state !== "verified")
           return {
             ...failure(
-              "Required platform or inference checks did not pass. Sending requires confirmation.",
+              checks.hardware?.state === "approval_required" ||
+                inference.state === "approval_required"
+                ? "A changed TEE build requires approval. Open Review versions and confirm with system authentication."
+                : "Required platform or inference checks did not pass. Sending requires confirmation.",
             ),
             checks,
           };
@@ -181,7 +192,7 @@ export function createMobileDeviceVerifier(
           message:
             "Required platform and inference checks passed. Full VM verification is incomplete.",
           verifiedAt: now(),
-          expiresAt: platform.value,
+          expiresAt: platform.value.expiresAt,
           targets: {
             vmOrigin: origin,
             proxyOrigin: policy.modelOrigin,
@@ -190,7 +201,7 @@ export function createMobileDeviceVerifier(
           },
           checks,
         };
-        acceptedDeadline = startedMonotonic + Math.max(0, platform.value - started);
+        acceptedDeadline = startedMonotonic + Math.max(0, platform.value.expiresAt - started);
         return accepted;
       } catch (cause) {
         accepted = undefined;

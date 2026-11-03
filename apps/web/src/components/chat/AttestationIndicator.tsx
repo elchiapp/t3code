@@ -1,5 +1,11 @@
 import type { AttestationStatus } from "@t3tools/contracts";
-import { attestationReport, type AttestationProvider } from "@t3tools/client-runtime/attestation";
+import { useEffect, useState } from "react";
+import {
+  clientAttestation,
+  requiresVersionApproval,
+  attestationReport,
+  type AttestationProvider,
+} from "@t3tools/client-runtime/attestation";
 import { Popover, PopoverTrigger, PopoverPopup } from "../ui/popover";
 import { Button } from "../ui/button";
 import { cn } from "~/lib/utils";
@@ -22,6 +28,15 @@ export function AttestationIndicator({
   environmentLabel?: string | undefined;
   provider?: AttestationProvider | undefined;
 }) {
+  const [open, setOpen] = useState(false);
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- A blocked send requests the native review popover through the shared authorization gate.
+  useEffect(
+    () =>
+      clientAttestation.onVersionReviewRequired((origin) => {
+        if (origin === status.origin) setOpen(true);
+      }),
+    [status.origin],
+  );
   const report = attestationReport(status, canSend, environmentLabel, provider);
   const state = report.allVerified ? "verified" : canSend ? "partial" : status.phase;
   return (
@@ -29,7 +44,7 @@ export function AttestationIndicator({
       className="flex min-h-6 items-center px-1 text-xs text-muted-foreground"
       data-attestation-state={state}
     >
-      <Popover>
+      <Popover open={open} onOpenChange={setOpen}>
         <PopoverTrigger
           render={
             <button
@@ -47,7 +62,7 @@ export function AttestationIndicator({
                 ? "bg-success"
                 : report.neutral
                   ? "bg-muted-foreground"
-                  : canSend || report.pending
+                  : canSend || report.pending || requiresVersionApproval(status)
                     ? "bg-warning"
                     : "bg-error",
             )}
@@ -58,6 +73,11 @@ export function AttestationIndicator({
         </PopoverTrigger>
         <PopoverPopup width="md" align="start">
           <div className="max-h-[min(75vh,42rem)] space-y-4 overflow-y-auto text-xs">
+            <AttestationVersionReview
+              key={status.targets?.vmOrigin ?? status.origin}
+              origin={status.targets?.vmOrigin ?? status.origin}
+              onChanged={onRetry}
+            />
             {overrideAccepted && (
               <div className="space-y-2">
                 <p>Unverified sending is allowed for this conversation until you close the app.</p>
@@ -119,11 +139,6 @@ export function AttestationIndicator({
             <Button size="sm" variant="outline" onClick={onRetry} disabled={report.pending}>
               Check again
             </Button>
-            <AttestationVersionReview
-              key={status.targets?.vmOrigin ?? status.origin}
-              origin={status.targets?.vmOrigin ?? status.origin}
-              onChanged={onRetry}
-            />
           </div>
         </PopoverPopup>
       </Popover>

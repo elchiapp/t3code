@@ -39,6 +39,12 @@ interface WorkerReply {
 
 const decodeFirmwareTargets = Schema.decodeUnknownSync(Schema.Array(Schema.String));
 const decodeVersionReview = Schema.decodeUnknownSync(AttestationVersionReview);
+const decodeHardwareResult = Schema.decodeUnknownSync(
+  Schema.Struct({
+    state: Schema.Literals(["verified", "approval_required"]),
+    detail: Schema.optionalKey(Schema.String),
+  }),
+);
 const collectHardwareResponse = createProofCollector();
 
 async function collectProof(proofOrigin: string, input: unknown) {
@@ -162,7 +168,9 @@ export function VerifierHost() {
             },
           collect: (input) => collectProof(policy.proofOrigin, input),
           verifyHardware: async (challenge, evidence) => {
-            await call("hardware", { challenge, evidence, ...(await firmwareInputs(evidence)) });
+            return decodeHardwareResult(
+              await call("hardware", { challenge, evidence, ...(await firmwareInputs(evidence)) }),
+            );
           },
           verifyInference: async () =>
             (await call("inference", { decisions: await mobileVersionStore.read() })) as {

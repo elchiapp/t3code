@@ -83,7 +83,7 @@
       "template_sha256": "5e310b35d2b0fba201457c73f7092084cfbbba3704a25e2ec6ee20fa8cc8b62f"
     },
     "templates/attestation/crypto-verifier.mjs.template": {
-      "template_sha256": "dfbc05f235b78347e8daccd331bd0720a089cea99e3659969ac14c6dc6962181"
+      "template_sha256": "ba20bec2c40b2cc797f422c0da495861ed01cbd043c2fdc0c09062b0c0f98511"
     },
     "templates/attestation/collect-evidence.mjs.template": {
       "template_sha256": "fbb1278ed31b2f7e656a7c391fdefe764d00b811a74d2859571728e06a274cf7"

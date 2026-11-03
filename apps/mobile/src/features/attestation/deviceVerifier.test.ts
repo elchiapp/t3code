@@ -23,6 +23,7 @@ function fixture() {
     },
     verifyHardware: async () => {
       calls.hardware++;
+      return { state: "verified" };
     },
     verifyInference: async () => {
       calls.inference++;
@@ -33,6 +34,24 @@ function fixture() {
 }
 
 describe("phone-side verification", () => {
+  it("reports a valid changed firmware as approval required without treating the matching connection key as broken", async () => {
+    const { operations } = fixture();
+    const verify = createMobileDeviceVerifier(
+      {
+        ...operations,
+        verifyHardware: async () => ({
+          state: "approval_required",
+          detail: "Review the exact build",
+        }),
+      },
+      () => 0,
+    );
+    const result = await verify({ origin });
+    expect(result.phase).not.toBe("verified");
+    expect(result.checks.hardware?.state).toBe("approval_required");
+    expect(result.checks.tls_key_commitment?.state).toBe("verified");
+    expect(result.message).toContain("system authentication");
+  });
   it("verifies hardware and inference locally without a laptop service", async () => {
     const { operations, calls } = fixture();
     const verify = createMobileDeviceVerifier(operations, () => 0);

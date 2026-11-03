@@ -1,7 +1,13 @@
-import { useState } from "react";
+import { useCallback, useState } from "react";
+import { useFocusEffect } from "@react-navigation/native";
 import { Pressable, ScrollView, View } from "react-native";
 import type { AttestationStatus } from "@t3tools/contracts";
-import { attestationReport, type AttestationProvider } from "@t3tools/client-runtime/attestation";
+import {
+  clientAttestation,
+  requiresVersionApproval,
+  attestationReport,
+  type AttestationProvider,
+} from "@t3tools/client-runtime/attestation";
 import { AppText as Text } from "../../components/ui/AppText";
 import { Sheet } from "../../components/ui/Sheet";
 import { VersionReview } from "./VersionReview";
@@ -24,6 +30,15 @@ export function AttestationIndicator({
   provider?: AttestationProvider | undefined;
 }) {
   const [showDetails, setShowDetails] = useState(false);
+  useFocusEffect(
+    useCallback(
+      () =>
+        clientAttestation.onVersionReviewRequired((origin) => {
+          if (origin === status.origin) setShowDetails(true);
+        }),
+      [status.origin],
+    ),
+  );
   const report = attestationReport(status, canSend, environmentLabel, provider);
   return (
     <>
@@ -40,7 +55,7 @@ export function AttestationIndicator({
               ? "text-xs text-adaptive-emerald-700-300"
               : report.neutral
                 ? "text-xs text-foreground-muted"
-                : canSend || report.pending
+                : canSend || report.pending || requiresVersionApproval(status)
                   ? "text-xs text-warning-foreground"
                   : "text-xs text-danger-foreground"
           }

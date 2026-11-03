@@ -8,6 +8,7 @@ import {
   sameReviewedVersion,
 } from "@t3tools/client-runtime/attestation";
 import { AppText as Text } from "../../components/ui/AppText";
+import { Button } from "../../components/ui/Button";
 function reviewNeedsRefresh(expiresAt: number): boolean {
   return expiresAt <= Date.now() + 5_000;
 }
@@ -238,14 +239,12 @@ export function VersionReview({
               : "We couldn't verify this version. Check again or open details."}
           </Text>
           {review.approvalState !== "approved" && (
-            <Pressable
-              accessibilityRole="button"
+            <Button
+              label="Approve update"
+              tone="contrast"
               disabled={busy || !review.eligible}
               onPress={() => void decide(review, "approve")}
-              className="rounded-xl bg-foreground px-4 py-3"
-            >
-              <Text className="text-center font-semibold text-background">Approve update</Text>
-            </Pressable>
+            />
           )}
           {review.eligible && (
             <Text className="text-xs text-foreground-muted">

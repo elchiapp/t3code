@@ -56,6 +56,11 @@ export function AttestationIndicator({
             contentInsetAdjustmentBehavior="automatic"
             contentContainerStyle={{ padding: 20, paddingBottom: 40, gap: 24 }}
           >
+            <VersionReview
+              key={status.targets?.vmOrigin ?? status.origin}
+              origin={status.targets?.vmOrigin ?? status.origin}
+              onChanged={retry}
+            />
             {overrideAccepted && (
               <View className="gap-2">
                 <Text className="text-sm text-foreground-muted">
@@ -120,11 +125,6 @@ export function AttestationIndicator({
             >
               <Text className="text-center font-semibold">Check again</Text>
             </Pressable>
-            <VersionReview
-              key={status.targets?.vmOrigin ?? status.origin}
-              origin={status.targets?.vmOrigin ?? status.origin}
-              onChanged={retry}
-            />
           </ScrollView>
         </Sheet>
       )}

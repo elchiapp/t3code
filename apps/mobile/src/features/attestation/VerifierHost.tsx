@@ -50,7 +50,12 @@ async function collectProof(proofOrigin: string, input: unknown) {
       redirect: "error",
       signal: controller.signal,
     });
-    if (!result.ok) throw new Error("VM hardware proof is unavailable");
+    if (!result.ok)
+      throw new Error(
+        result.status === 429
+          ? "The VM hardware collector is busy. Check again."
+          : `VM hardware proof request failed (HTTP ${result.status}).`,
+      );
     const length = Number(result.headers.get("content-length"));
     if (Number.isFinite(length) && length > 524288)
       throw new Error("Evidence exceeds the size limit");

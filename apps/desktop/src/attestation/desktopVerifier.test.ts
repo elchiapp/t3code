@@ -33,6 +33,7 @@ describe("desktop device verifier boundary", () => {
   it("preserves exact-build approval state and a valid key proof without admitting the request", async () => {
     const verify = createDesktopVerifier({
       ...services(),
+      readPolicy: async () => ({ ...policy, inferenceOrigin: "https://inference.example" }),
       readStatus: async () => ({
         ...proof(),
         ready: false,
@@ -44,6 +45,10 @@ describe("desktop device verifier boundary", () => {
     expect(status.checks.hardware?.state).toBe("approval_required");
     expect(status.checks.tls_key_commitment?.state).toBe("verified");
     expect(status.message).toContain("system authentication");
+    const mac = await verify({ origin: "http://100.64.0.2:3773" });
+    expect(mac.phase).toBe("failed");
+    expect(mac.checks.hardware?.state).toBe("approval_required");
+    expect(mac.checks.environment_connection?.state).toBe("not_configured");
   });
   it("checks the actual transport certificate even when a separate probe would pass", async () => {
     const verify = createCertificateVerifier(services());
@@ -106,6 +111,21 @@ describe("desktop device verifier boundary", () => {
     });
     expect((await verify({ origin: "https://other.example" })).phase).toBe("unavailable");
     expect(reads).toBe(0);
+    let probes = 0;
+    const proxyVerify = createDesktopVerifier({
+      ...services(),
+      readPolicy: async () => ({ ...policy, inferenceOrigin: "https://inference.example" }),
+      peerKey: async () => {
+        probes++;
+        return key;
+      },
+    });
+    const mac = await proxyVerify({ origin: "http://100.64.0.2:3773" });
+    expect(mac.checks.environment_connection?.state).toBe("not_configured");
+    expect(mac.checks.hardware?.state).toBe("verified");
+    expect(mac.checks["inference:tinfoil"]?.state).toBe("verified");
+    expect(mac.targets?.vmOrigin).toBe(origin);
+    expect(probes).toBe(0);
   });
   it("rejects a ready boolean without the real checks", async () => {
     const verify = createDesktopVerifier({
@@ -117,11 +137,15 @@ describe("desktop device verifier boundary", () => {
   it("rejects evidence for a different inference target", async () => {
     const verify = createDesktopVerifier({
       ...services(),
+      readPolicy: async () => ({ ...policy, inferenceOrigin: "https://inference.example" }),
       readStatus: async () => ({ ...proof(), modelOrigin: "https://other.example" }),
     });
     const wrongTarget = await verify({ origin });
     expect(wrongTarget.phase).toBe("failed");
     expect(wrongTarget.checks.inference?.state).toBe("failed");
+    const mac = await verify({ origin: "http://100.64.0.2:3773" });
+    expect(mac.phase).toBe("failed");
+    expect(mac.checks.inference?.state).toBe("failed");
   });
   it("rejects the wrong environment TLS key", async () => {
     const verify = createDesktopVerifier({ ...services(), peerKey: async () => "b".repeat(64) });

@@ -81,7 +81,9 @@ export function createDesktopVerifier(services: {
     });
     try {
       const origin = originOf(request.origin);
-      if (request.origin !== origin || !policy.allowedEnvironmentOrigins.includes(origin))
+      if (request.origin !== origin) return failure("failed", "Invalid environment origin.");
+      const environmentCovered = policy.allowedEnvironmentOrigins.includes(origin);
+      if (!environmentCovered && !policy.inferenceOrigin)
         return {
           ...failure("unavailable", "Verification is not configured for this environment."),
           checks: {
@@ -137,6 +139,7 @@ export function createDesktopVerifier(services: {
       const connectionVerified =
         fresh && targetMatches && proof.checks.tls_key_commitment?.state === "verified";
       if (
+        environmentCovered &&
         connectionVerified &&
         target.protocol === "https:" &&
         (await services.peerKey(origin)) !== proof.tlsSpkiSha256
@@ -149,11 +152,24 @@ export function createDesktopVerifier(services: {
           },
         };
       if (
+        environmentCovered &&
         target.protocol !== "https:" &&
         !["127.0.0.1", "localhost", "[::1]"].includes(target.hostname)
       )
         return failure("failed", "A remote environment requires HTTPS.");
-      if (connectionVerified)
+      if (!environmentCovered)
+        proof = {
+          ...proof,
+          checks: {
+            ...proof.checks,
+            environment_connection: {
+              state: "not_configured",
+              detail:
+                "This environment is not attested. The VM proof covers only the configured inference proxy.",
+            },
+          },
+        };
+      if (connectionVerified && environmentCovered)
         proof = {
           ...proof,
           checks: {
@@ -207,19 +223,23 @@ export function createDesktopVerifier(services: {
       return {
         origin,
         phase: "verified",
-        message: "Required platform and inference checks passed.",
+        message: environmentCovered
+          ? "Required platform and inference checks passed."
+          : "Inference proxy and endpoint checks passed. This environment is not attested.",
         targets,
         verifiedAt: proof.verifiedAt ?? null,
         expiresAt: proof.expiresAt ?? null,
         checks: {
           ...proof.checks,
-          environment_connection: {
-            state: "verified",
-            detail:
-              target.protocol === "https:"
-                ? "Selected environment TLS key matches the VM proof"
-                : "Explicitly trusted loopback environment",
-          },
+          environment_connection: environmentCovered
+            ? {
+                state: "verified",
+                detail:
+                  target.protocol === "https:"
+                    ? "Selected environment TLS key matches the VM proof"
+                    : "Explicitly trusted loopback environment",
+              }
+            : proof.checks.environment_connection!,
         },
       };
     } catch {

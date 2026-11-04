@@ -176,7 +176,7 @@ export function attestationReport(
             "Inference hardware, keys and release",
             "Independently checks the selected inference endpoint's TEE evidence, encryption keys and approved software release.",
           ),
-          ...(local && targets
+          ...((local || unconfiguredEnvironment) && targets
             ? [
                 row(
                   "hardware",
@@ -199,7 +199,7 @@ export function attestationReport(
   const allVerified =
     canSend && [...platformRows, ...inferenceRows].every((item) => item.result === "Verified");
   const platformSummary = unconfiguredEnvironment
-    ? "Attestation is not configured for this environment. Messages can be sent without attestation."
+    ? "This environment is not attested. Inference is checked separately."
     : local
       ? "Local device. No confidential-VM attestation applies to this environment."
       : platformPassed

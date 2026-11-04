@@ -59,6 +59,7 @@ export function createMobileDeviceVerifier(
     };
     const policy = operations.policy;
     let origin: string;
+    let environmentCovered = false;
     try {
       const url = new URL(request.origin);
       if (
@@ -69,13 +70,18 @@ export function createMobileDeviceVerifier(
       )
         return failure("The environment must use a valid HTTP or HTTPS origin.");
       origin = url.origin;
-      if (!policy.environmentOrigins.includes(origin))
+      environmentCovered = policy.environmentOrigins.includes(origin);
+      if (!environmentCovered && !policy.inferenceOrigin)
         return {
           ...failure("Attestation is not configured for this environment."),
           phase: "unavailable",
           checks: { environment_connection: { state: "not_configured" } },
         };
-      if (url.protocol !== "https:" || !/^[a-f0-9]{64}$/.test(policy.tlsSpkiSha256))
+      if (
+        (environmentCovered && url.protocol !== "https:") ||
+        new URL(policy.modelOrigin).protocol !== "https:" ||
+        !/^[a-f0-9]{64}$/.test(policy.tlsSpkiSha256)
+      )
         return failure("The VM connection must use its approved HTTPS origin and key.");
       if (!(await operations.transportProtected()))
         return failure(
@@ -155,10 +161,16 @@ export function createMobileDeviceVerifier(
             state: freshPlatform ? "verified" : "unavailable",
             detail: "The VM hardware proof must commit to the key pinned by this app.",
           },
-          environment_connection: {
-            state: freshPlatform ? "verified" : "unavailable",
-            detail: "Native HTTPS and WebSocket connections enforce the approved VM key.",
-          },
+          environment_connection: environmentCovered
+            ? {
+                state: freshPlatform ? "verified" : "unavailable",
+                detail: "Native HTTPS and WebSocket connections enforce the approved VM key.",
+              }
+            : {
+                state: "not_configured",
+                detail:
+                  "This environment has no hardware attestation. The VM proof covers only the configured inference proxy.",
+              },
           inference,
           ...Object.fromEntries(
             (policy.inferenceProviderIds ?? ["tinfoil"]).map((id) => [
@@ -195,12 +207,15 @@ export function createMobileDeviceVerifier(
         accepted = {
           origin,
           phase: "verified",
-          message:
-            "Required platform and inference checks passed. Full VM verification is incomplete.",
+          message: environmentCovered
+            ? "Required platform and inference checks passed. Full VM verification is incomplete."
+            : "Inference proxy and endpoint checks passed. This environment is not attested.",
           verifiedAt: now(),
           expiresAt: platform.value.expiresAt,
           targets: {
-            vmOrigin: origin,
+            vmOrigin: environmentCovered
+              ? origin
+              : (policy.environmentOrigins[0] ?? policy.modelOrigin),
             proxyOrigin: policy.modelOrigin,
             ...(policy.inferenceOrigin ? { inferenceOrigin: policy.inferenceOrigin } : {}),
             inferenceProviderIds: policy.inferenceProviderIds ?? ["tinfoil"],

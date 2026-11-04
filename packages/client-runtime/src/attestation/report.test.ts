@@ -72,6 +72,24 @@ describe("composer attestation colors", () => {
     expect(report.label).toBe("Tinfoil update needs approval");
     expect(report.actionLabel).toBe("Review update");
     expect(report.needsApproval).toBe(true);
+    const remoteMac = attestationReport(
+      {
+        ...full,
+        origin: "http://100.84.28.120:3773",
+        checks: { ...full.checks, environment_connection: { state: "not_configured" } },
+      },
+      true,
+      "Mac",
+      { instanceId: "tinfoil", label: "Tinfoil" },
+    );
+    expect(remoteMac.tone).toBe("yellow");
+    expect(remoteMac.sections[0]?.rows[0]?.result).toBe("Not configured");
+    expect(remoteMac.sections[1]?.rows).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ title: "Proxy VM hardware", result: "Verified" }),
+        expect.objectContaining({ title: "Proxy connection key", result: "Verified" }),
+      ]),
+    );
     const offline = { ...full, phase: "failed" as const, checks: {} };
     expect(
       attestationReport(offline, false, "VM", { instanceId: "tinfoil", label: "Tinfoil" }).tone,

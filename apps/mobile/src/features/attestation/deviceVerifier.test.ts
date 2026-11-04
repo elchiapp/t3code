@@ -76,7 +76,7 @@ describe("phone-side verification", () => {
     expect(result.phase).toBe("failed");
     expect(result.checks.hardware?.state).toBe("failed");
     expect(result.checks.inference?.state).toBe("verified");
-    const remoteMac = await verify({ origin: "http://100.84.28.120:3773" });
+    const remoteMac = await verify({ origin: "http://100.64.0.2:3773" });
     expect(remoteMac.phase).toBe("failed");
     expect(remoteMac.checks.hardware?.state).toBe("failed");
     expect(remoteMac.checks.environment_connection?.state).toBe("not_configured");
@@ -100,7 +100,7 @@ describe("phone-side verification", () => {
       },
       () => 0,
     );
-    const remoteMac = "http://100.84.28.120:3773";
+    const remoteMac = "http://100.64.0.2:3773";
     const proxyResult = await proxyVerifier({ origin: remoteMac });
     expect(proxyResult.checks.environment_connection?.state).toBe("not_configured");
     expect(proxyResult.checks.hardware?.state).toBe("verified");
@@ -138,7 +138,7 @@ describe("phone-side verification", () => {
     expect(result.phase).toBe("failed");
     expect(result.checks.hardware?.state).toBe("verified");
     expect(result.checks.inference?.state).toBe("approval_required");
-    const remoteMac = await verify({ origin: "http://100.84.28.120:3773" });
+    const remoteMac = await verify({ origin: "http://100.64.0.2:3773" });
     expect(remoteMac.phase).toBe("failed");
     expect(remoteMac.checks.inference?.state).toBe("approval_required");
     expect(remoteMac.targets?.vmOrigin).toBe(origin);

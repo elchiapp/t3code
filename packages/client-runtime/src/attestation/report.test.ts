@@ -75,7 +75,7 @@ describe("composer attestation colors", () => {
     const remoteMac = attestationReport(
       {
         ...full,
-        origin: "http://100.84.28.120:3773",
+        origin: "http://100.64.0.2:3773",
         checks: { ...full.checks, environment_connection: { state: "not_configured" } },
       },
       true,

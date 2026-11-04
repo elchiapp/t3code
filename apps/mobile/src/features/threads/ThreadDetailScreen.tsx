@@ -1523,6 +1523,14 @@ function ThreadDetailBody(props: ThreadDetailScreenProps) {
                     key={props.selectedThread.latestRun?.runId}
                     thread={props.selectedThread}
                     environmentId={props.environmentId}
+                    canRetry={
+                      props.canOperateThread &&
+                      props.connectionStateLabel === "connected" &&
+                      !props.activeThreadBusy &&
+                      props.creationState === null &&
+                      props.activePendingApprovals.length === 0 &&
+                      props.activePendingUserInput === null
+                    }
                   />
                   <ChatGptUsageLimitNotice
                     key={`chatgpt-limit:${props.selectedThread.latestRun?.runId}`}

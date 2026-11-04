@@ -11,6 +11,10 @@ const test = vi.hoisted(() => ({
   isCurrent: vi.fn<() => boolean>(),
   start: vi.fn(),
   update: vi.fn(),
+  runtime: vi.fn(),
+  interaction: vi.fn(),
+  runtimeMode: undefined as "approval-required" | "full-access" | undefined,
+  interactionMode: undefined as "default" | "plan" | undefined,
   canOperate: true,
   origin: "https://vm.example",
   selection: undefined as { instanceId: string; model: string } | undefined,
@@ -20,6 +24,10 @@ function setup() {
   test.isCurrent.mockReset().mockReturnValue(true);
   test.start.mockReset().mockResolvedValue(AsyncResult.success(undefined));
   test.update.mockReset().mockResolvedValue(AsyncResult.success(undefined));
+  test.runtime.mockReset().mockResolvedValue(AsyncResult.success(undefined));
+  test.interaction.mockReset().mockResolvedValue(AsyncResult.success(undefined));
+  test.runtimeMode = undefined;
+  test.interactionMode = undefined;
   test.canOperate = true;
   test.origin = "https://vm.example";
   test.selection = undefined;
@@ -43,10 +51,21 @@ vi.mock("../../components/ui/Button", () => ({
   ),
 }));
 vi.mock("../../state/threads", () => ({
-  threadEnvironment: { updateMetadata: "metadata", startTurn: "start" },
+  threadEnvironment: {
+    updateMetadata: "metadata",
+    startTurn: "start",
+    setRuntimeMode: "runtime",
+    setInteractionMode: "interaction",
+  },
 }));
 vi.mock("../../state/use-atom-command", () => ({
-  useAtomCommand: (command: string) => (command === "start" ? test.start : test.update),
+  useAtomCommand: (command: string) =>
+    ({
+      start: test.start,
+      metadata: test.update,
+      runtime: test.runtime,
+      interaction: test.interaction,
+    })[command],
 }));
 vi.mock("../../state/session", () => ({ readEnvironmentScope: () => test.canOperate }));
 vi.mock("../attestation/useAttestation", () => ({
@@ -57,7 +76,11 @@ vi.mock("../attestation/useAttestation", () => ({
   }),
 }));
 vi.mock("../../state/use-composer-drafts", () => ({
-  useComposerDraftSettings: () => ({ modelSelection: test.selection }),
+  useComposerDraftSettings: () => ({
+    modelSelection: test.selection,
+    runtimeMode: test.runtimeMode,
+    interactionMode: test.interactionMode,
+  }),
 }));
 vi.mock("../../lib/commandMetadata", () => ({
   makeQueuedMessageMetadata: () => ({ commandId: "retry-command", messageId: "retry-message" }),
@@ -186,7 +209,7 @@ describe("UsageLimitRecoveryCard", () => {
       expect(test.start).not.toHaveBeenCalled();
     },
   );
-  it.each(["run", "provider", "origin"])(
+  it.each(["run", "provider", "origin", "permissions"])(
     "discards a retry if its %s changes during authorization",
     async (changed) => {
       using _setup = setup();
@@ -205,6 +228,7 @@ describe("UsageLimitRecoveryCard", () => {
       };
       if (changed === "provider") test.selection = { instanceId: "changed", model: "model" };
       if (changed === "origin") test.origin = "https://different-vm.example";
+      if (changed === "permissions") test.runtimeMode = "full-access";
       screen.render(replacement);
       await act(async () => {
         allow(true);
@@ -220,5 +244,36 @@ describe("UsageLimitRecoveryCard", () => {
     await act(async () => screen.retry().click());
     expect(screen.container.textContent).toContain("Still limited");
     expect(screen.retry().disabled).toBe(false);
+  });
+  it("applies the selected permission mode before resuming and stops if it cannot save it", async () => {
+    using _setup = setup();
+    test.runtimeMode = "approval-required";
+    test.interactionMode = "plan";
+    using screen = mount({ ...failedThread(null), runtimeMode: "full-access" });
+    test.runtime.mockResolvedValueOnce(AsyncResult.fail(new Error("Permission update failed")));
+    await act(async () => screen.retry().click());
+    expect(test.start).not.toHaveBeenCalled();
+    expect(test.interaction).not.toHaveBeenCalled();
+    expect(screen.container.textContent).toContain("Permission update failed");
+    await act(async () => screen.retry().click());
+    expect(test.runtime).toHaveBeenLastCalledWith({
+      environmentId: "env-1",
+      input: { threadId: "thread-1", runtimeMode: "approval-required" },
+    });
+    expect(test.interaction).toHaveBeenCalledWith({
+      environmentId: "env-1",
+      input: { threadId: "thread-1", interactionMode: "plan" },
+    });
+    expect(test.start).toHaveBeenCalledTimes(1);
+    expect(test.start.mock.calls[0]![0].input).toMatchObject({
+      runtimeMode: "approval-required",
+      interactionMode: "plan",
+    });
+    expect(test.runtime.mock.invocationCallOrder.at(-1)!).toBeLessThan(
+      test.start.mock.invocationCallOrder[0]!,
+    );
+    expect(test.interaction.mock.invocationCallOrder[0]!).toBeLessThan(
+      test.start.mock.invocationCallOrder[0]!,
+    );
   });
 });

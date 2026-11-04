@@ -32,8 +32,14 @@ export function UsageLimitRecoveryCard({
 }) {
   const updateMetadata = useAtomCommand(threadEnvironment.updateMetadata);
   const startTurn = useAtomCommand(threadEnvironment.startTurn, { reportFailure: false });
+  const setRuntimeMode = useAtomCommand(threadEnvironment.setRuntimeMode, { reportFailure: false });
+  const setInteractionMode = useAtomCommand(threadEnvironment.setInteractionMode, {
+    reportFailure: false,
+  });
   const draft = useComposerDraftSettings(scopedThreadKey(environmentId, thread.id));
   const selection = draft.modelSelection ?? thread.modelSelection;
+  const runtimeMode = draft.runtimeMode ?? thread.runtimeMode;
+  const interactionMode = draft.interactionMode ?? thread.interactionMode;
   const attestation = useAttestation(environmentId, thread.id, selection.instanceId);
 
   const retrying = useRef(false);
@@ -52,6 +58,8 @@ export function UsageLimitRecoveryCard({
     runId,
     canRetry,
     selection,
+    runtimeMode,
+    interactionMode,
     attestation.status.origin,
   ]);
   // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- A committed run, permission, model or connection change must cancel a retry waiting for device authorization.
@@ -91,15 +99,41 @@ export function UsageLimitRecoveryCard({
     )
       return;
     if (!readEnvironmentScope(environmentId, AuthOrchestrationOperateScope)) return;
+    const isCurrent = () =>
+      !scope.controller.signal.aborted &&
+      attestation.isCurrent() &&
+      readEnvironmentScope(environmentId, AuthOrchestrationOperateScope);
     retrying.current = true;
     setPending(true);
     setError(null);
     await (async () => {
       try {
         if (!(await attestation.authorize())) return;
-        if (scope.controller.signal.aborted) return;
-        if (!attestation.isCurrent()) return;
-        if (!readEnvironmentScope(environmentId, AuthOrchestrationOperateScope)) return;
+        if (!isCurrent()) return;
+        if (runtimeMode !== thread.runtimeMode) {
+          const settings = await setRuntimeMode({
+            environmentId,
+            input: { threadId: thread.id, runtimeMode },
+          });
+          if (AsyncResult.isFailure(settings)) {
+            if (!scope.controller.signal.aborted)
+              setError(retryErrorMessage(squashAtomCommandFailure(settings)));
+            return;
+          }
+        }
+        if (!isCurrent()) return;
+        if (interactionMode !== thread.interactionMode) {
+          const settings = await setInteractionMode({
+            environmentId,
+            input: { threadId: thread.id, interactionMode },
+          });
+          if (AsyncResult.isFailure(settings)) {
+            if (!scope.controller.signal.aborted)
+              setError(retryErrorMessage(squashAtomCommandFailure(settings)));
+            return;
+          }
+        }
+        if (!isCurrent()) return;
         const metadata = makeQueuedMessageMetadata();
         const result = await startTurn({
           environmentId,
@@ -114,8 +148,8 @@ export function UsageLimitRecoveryCard({
               text: "Continue where you left off.",
               attachments: [],
             },
-            runtimeMode: thread.runtimeMode,
-            interactionMode: thread.interactionMode,
+            runtimeMode,
+            interactionMode,
             dispatchMode: "start",
           },
         });

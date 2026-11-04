@@ -101,14 +101,18 @@ describe("phone-side verification", () => {
       () => 0,
     );
     const remoteMac = "http://100.64.0.2:3773";
-    const proxyResult = await proxyVerifier({ origin: remoteMac });
+    const [vmResult, proxyResult] = await Promise.all([
+      proxyVerifier({ origin }),
+      proxyVerifier({ origin: remoteMac }),
+    ]);
+    expect(vmResult.origin).toBe(origin);
     expect(proxyResult.checks.environment_connection?.state).toBe("not_configured");
     expect(proxyResult.checks.hardware?.state).toBe("verified");
     expect(proxyResult.checks.tls_key_commitment?.state).toBe("verified");
     expect(proxyResult.checks["inference:tinfoil"]?.state).toBe("verified");
     expect(proxyResult.targets?.vmOrigin).toBe(origin);
     expect(proxyResult.origin).toBe(remoteMac);
-    expect(proxyFixture.calls).toEqual({ hardware: 1, inference: 1, collection: 1 });
+    expect(proxyFixture.calls).toEqual({ hardware: 2, inference: 2, collection: 2 });
   });
   it("requires actual native transport protection even with a cached receipt", async () => {
     const { operations } = fixture();

@@ -36,7 +36,7 @@ export function createMobileDeviceVerifier(
   let accepted: AttestationStatus | undefined;
   let acceptedDeadline = 0;
   let pending: Promise<AttestationStatus> | undefined;
-  return async (request: AttestationRequest): Promise<AttestationStatus> => {
+  return async function verify(request: AttestationRequest): Promise<AttestationStatus> {
     const failure = (message: string): AttestationStatus => {
       accepted = undefined;
       acceptedDeadline = 0;
@@ -99,9 +99,8 @@ export function createMobileDeviceVerifier(
       return accepted;
     if (pending) {
       const result = await pending;
-      return result.origin === origin
-        ? result
-        : failure("Verification belongs to another environment.");
+      // Startup can verify the VM while a Mac-hosted thread asks for its own scoped result.
+      return result.origin === origin ? result : verify(request);
     }
     accepted = undefined;
     const started = now();

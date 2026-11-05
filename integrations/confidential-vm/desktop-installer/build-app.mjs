@@ -32,6 +32,12 @@ const app = NodePath.join(output, "T3 Attested.app");
 await NodeFSP.cp(appSource, app, { recursive: true, verbatimSymlinks: true });
 const resources = NodePath.join(app, "Contents", "Resources");
 await NodeFSP.rm(NodePath.join(resources, "t3-attested-launch.json"), { force: true });
+// Prepare nested Electron/helper signatures before adding the independently signed Node runtime.
+await run(
+  "/usr/bin/codesign",
+  ["--force", "--deep", "--sign", identity, "--preserve-metadata=entitlements", app],
+  { timeout: 120000 },
+);
 const client = JSON.parse(await NodeFSP.readFile(clientPolicyFile, "utf8"));
 const model = new globalThis.URL(client.modelOrigin);
 if (

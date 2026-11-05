@@ -7,7 +7,8 @@ import * as NodeCrypto from "node:crypto";
 import {
   createManagedVerifierRuntime,
   createVerifierSupervisor,
-  readManagedRuntime,
+  readBundledRuntime,
+  readDevicePolicy,
 } from "./verifierRuntime.ts";
 
 it("shares cold startup across requests and restarts only its own exited process", async () => {
@@ -91,56 +92,55 @@ it("does not leave a process behind when quitting overlaps startup", async () =>
 });
 
 async function fixture(platform = "darwin") {
-  const support = await NodeFSP.mkdtemp(NodePath.join(NodeOS.tmpdir(), "t3-owned-verifier-"));
+  const support = await NodeFSP.mkdtemp(NodePath.join(NodeOS.tmpdir(), "t3-bundled-verifier-"));
   const app = NodePath.join(support, "T3 Attested.app");
-  const runtime = NodePath.join(support, "VerificationRuntime", "test-1");
-  await NodeFSP.mkdir(runtime, { recursive: true, mode: 0o700 });
+  const resources = NodePath.join(app, "Contents", "Resources");
+  const runtime = NodePath.join(resources, "attestation-verifier");
+  await NodeFSP.mkdir(runtime, { recursive: true, mode: 0o755 });
   const executable = platform === "win32" ? "node.exe" : "node";
   const files = [];
   for (const path of [executable, "start.mjs"]) {
     const content = Buffer.from("test-only " + path);
-    await NodeFSP.writeFile(NodePath.join(runtime, path), content, { mode: 0o700 });
+    await NodeFSP.writeFile(NodePath.join(runtime, path), content, { mode: 0o755 });
     files.push({ path, sha256: NodeCrypto.createHash("sha256").update(content).digest("hex") });
   }
-  const receipt = { installed: true, app, runtime, release: "test-1" };
-  await NodeFSP.writeFile(
-    NodePath.join(support, "installer-receipt.json"),
-    JSON.stringify(receipt),
-    { mode: 0o600 },
-  );
   await NodeFSP.writeFile(
     NodePath.join(runtime, "manifest.json"),
     JSON.stringify({ version: 1, release: "test-1", files }),
-    { mode: 0o600 },
+    { mode: 0o644 },
   );
   return {
     support,
     app,
+    resources,
     runtime,
-    receipt,
     [Symbol.asyncDispose]: () => NodeFSP.rm(support, { recursive: true, force: true }),
   };
 }
 
-it.each(["darwin", "linux", "win32"])("uses a verified local profile on %s", async (platform) => {
-  await using f = await fixture(platform);
-  const profile = await readManagedRuntime(f.support, f.app, platform);
-  expect(profile.root).toBe(f.runtime);
-  expect(NodePath.basename(profile.executable)).toBe(platform === "win32" ? "node.exe" : "node");
-});
+it.each(["darwin", "linux", "win32"])(
+  "uses bundled code without an installer receipt on %s",
+  async (platform) => {
+    await using f = await fixture(platform);
+    const profile = await readBundledRuntime(f.resources, platform);
+    expect(profile.root).toBe(f.runtime);
+    expect(NodePath.basename(profile.executable)).toBe(platform === "win32" ? "node.exe" : "node");
+    const movedApp = NodePath.join(f.support, "Moved.app");
+    await NodeFSP.rename(f.app, movedApp);
+    expect(
+      (await readBundledRuntime(NodePath.join(movedApp, "Contents", "Resources"), platform))
+        .release,
+    ).toBe("test-1");
+  },
+);
 
-it("refuses changed code and an arbitrary runtime path before executing anything", async () => {
+it("refuses changed bundled code instead of using an older installed runtime", async () => {
   await using f = await fixture();
   await NodeFSP.writeFile(NodePath.join(f.runtime, "start.mjs"), "changed");
-  await expect(readManagedRuntime(f.support, f.app, "darwin")).rejects.toThrow("code changed");
-  await NodeFSP.writeFile(
-    NodePath.join(f.support, "installer-receipt.json"),
-    JSON.stringify({ ...f.receipt, runtime: "/other/code" }),
-  );
-  await expect(readManagedRuntime(f.support, f.app, "darwin")).rejects.toThrow("does not match");
+  await expect(readBundledRuntime(f.resources, "darwin")).rejects.toThrow("code changed");
 });
 
-it("refuses linked runtime code", async () => {
+it("refuses linked bundled runtime code", async () => {
   await using f = await fixture();
   await NodeFSP.rename(
     NodePath.join(f.runtime, "start.mjs"),
@@ -150,14 +150,14 @@ it("refuses linked runtime code", async () => {
     NodePath.join(f.runtime, "original.mjs"),
     NodePath.join(f.runtime, "start.mjs"),
   );
-  await expect(readManagedRuntime(f.support, f.app, "darwin")).rejects.toThrow("not trusted");
+  await expect(readBundledRuntime(f.resources, "darwin")).rejects.toThrow("not trusted");
 });
 
 it("does not start a late eager request after the app has already quit", async () => {
   const retireLegacy = vi.fn();
   const runtime = createManagedVerifierRuntime({
     support: "/unused",
-    app: "/unused",
+    resources: "/unused",
     platform: "darwin",
     retireLegacy,
   });
@@ -166,4 +166,17 @@ it("does not start a late eager request after the app has already quit", async (
     "closing",
   );
   expect(retireLegacy).not.toHaveBeenCalled();
+});
+
+it("uses bundled public settings on a fresh device and preserves local overrides", async () => {
+  await using f = await fixture();
+  const local = NodePath.join(f.support, "attestation-client.json");
+  const bundled = NodePath.join(f.resources, "attestation-client.json");
+  await NodeFSP.writeFile(bundled, '{"scope":"bundled"}', { mode: 0o644 });
+  expect(await readDevicePolicy(local, bundled)).toEqual({ scope: "bundled" });
+  await expect(NodeFSP.stat(local)).rejects.toMatchObject({ code: "ENOENT" });
+  await NodeFSP.writeFile(local, '{"scope":"local"}', { mode: 0o600 });
+  expect(await readDevicePolicy(local, bundled)).toEqual({ scope: "local" });
+  await NodeFSP.writeFile(local, "invalid");
+  await expect(readDevicePolicy(local, bundled)).rejects.toThrow();
 });

@@ -10,7 +10,6 @@ import { createDeviceApprovalController } from "@t3tools/client-runtime/attestat
 import * as Context from "effect/Context";
 import * as Crypto from "effect/Crypto";
 import * as Effect from "effect/Effect";
-import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Schema from "effect/Schema";
 import * as Option from "effect/Option";
@@ -20,7 +19,7 @@ import * as HttpIncomingMessage from "effect/http/HttpIncomingMessage";
 import * as NodeOS from "node:os";
 import * as NodeChildProcess from "node:child_process";
 import * as NodeUtil from "node:util";
-import { createManagedVerifierRuntime } from "./verifierRuntime.ts";
+import { createManagedVerifierRuntime, readDevicePolicy } from "./verifierRuntime.ts";
 import * as NodeTls from "node:tls";
 // @effect-diagnostics-next-line nodeBuiltinImport:off -- Effect Crypto cannot parse an X.509 public key.
 import * as NodeCrypto from "node:crypto";
@@ -36,7 +35,6 @@ import { authenticateDevice, configureLinuxApprovalPolicy } from "./deviceAuthen
 import * as ElectronWindow from "../electron/ElectronWindow.ts";
 import * as Channels from "../ipc/channels.ts";
 
-const decodePolicyText = Schema.decodeEffect(Schema.fromJsonString(Schema.Unknown));
 const reviewSnapshot = Schema.decodeUnknownSync(
   Schema.Struct({
     reviews: Schema.Array(AttestationVersionReview),
@@ -94,27 +92,17 @@ const make = Effect.gen(function* () {
   const context = yield* Effect.context<never>();
   const runPromise = Effect.runPromiseWith(context);
   const environment = yield* DesktopEnvironment.DesktopEnvironment;
-  const files = yield* FileSystem.FileSystem;
   const crypto = yield* Crypto.Crypto;
   const http = yield* HttpClient.HttpClient;
   const windows = yield* ElectronWindow.ElectronWindow;
   const policyPath = environment.path.join(environment.baseDir, "attestation-client.json");
   const services: Parameters<typeof createDesktopVerifier>[0] = {
     readPolicy: () =>
-      runPromise(
-        Effect.gen(function* () {
-          if (!(yield* files.exists(policyPath))) return null;
-          const info = yield* files.stat(policyPath);
-          if (
-            info.type !== "File" ||
-            (environment.platform !== "win32" &&
-              (Option.getOrUndefined(info.uid) !== NodeOS.userInfo().uid ||
-                (info.mode & 0o077) !== 0)) ||
-            info.size > ByteSize.bytes(32_768)
-          )
-            return yield* new DeviceVerifierError({ message: "Untrusted device policy" });
-          return yield* decodePolicyText(yield* files.readFileString(policyPath));
-        }),
+      readDevicePolicy(
+        policyPath,
+        environment.isPackaged
+          ? environment.path.join(environment.resourcesPath, "attestation-client.json")
+          : undefined,
       ),
     readStatus: async (origin: string) => {
       const policy = decodeDevicePolicy(await services.readPolicy());
@@ -151,10 +139,7 @@ const make = Effect.gen(function* () {
   };
   const runtime = createManagedVerifierRuntime({
     support: environment.path.join(environment.appDataDirectory, "T3 Attested"),
-    app:
-      environment.platform === "darwin"
-        ? environment.path.dirname(environment.path.dirname(environment.resourcesPath))
-        : environment.path.dirname(environment.resourcesPath),
+    resources: environment.resourcesPath,
     platform: environment.platform,
     retireLegacy: async () => {
       if (environment.platform !== "darwin") return;

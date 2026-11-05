@@ -1,4 +1,4 @@
-// @effect-diagnostics nodeBuiltinImport:off -- This native boundary owns only the locally installed verifier process.
+// @effect-diagnostics nodeBuiltinImport:off -- This native boundary owns only the bundled verifier process.
 /* oxlint-disable t3code/no-global-process-runtime -- This OS adapter verifies file ownership and builds a whitelisted child environment. */
 import * as NodeFSP from "node:fs/promises";
 import * as NodePath from "node:path";
@@ -55,55 +55,54 @@ export function createVerifierSupervisor(services: {
   };
 }
 
-async function regular(path: string, maxBytes?: number) {
+async function regular(path: string, maxBytes?: number, bundled = false) {
   const stat = await NodeFSP.lstat(path);
   if (
     !stat.isFile() ||
     stat.isSymbolicLink() ||
     (maxBytes !== undefined && stat.size > maxBytes) ||
-    (process.platform !== "win32" && (stat.uid !== process.getuid!() || stat.mode & 0o022))
+    (process.platform !== "win32" &&
+      ((stat.uid !== process.getuid!() && !(bundled && stat.uid === 0)) || stat.mode & 0o022))
   )
-    throw new Error("The installed verification runtime is not trusted.");
+    throw new Error("The verification file is not trusted.");
   return stat;
 }
 
-export async function readManagedRuntime(support: string, app: string, platform: string) {
-  const receipt = NodePath.join(support, "installer-receipt.json");
+export async function readDevicePolicy(local: string, bundled?: string): Promise<unknown> {
   try {
-    await regular(receipt, 32_768);
+    const stat = await regular(local, 32_768);
+    if (process.platform !== "win32" && stat.mode & 0o077)
+      throw new Error("Untrusted device policy");
+    return JSON.parse(await NodeFSP.readFile(local, "utf8"));
   } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === "ENOENT")
-      throw new Error(
-        "The local verifier is not installed. Run Install T3 Attested.app to repair it.",
-        { cause: error },
-      );
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+  }
+  if (!bundled) return null;
+  try {
+    await regular(bundled, 32_768, true);
+    return JSON.parse(await NodeFSP.readFile(bundled, "utf8"));
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
     throw error;
   }
-  const value = JSON.parse(await NodeFSP.readFile(receipt, "utf8"));
+}
+
+export async function readBundledRuntime(resources: string, platform: string) {
+  const root = NodePath.join(resources, "attestation-verifier");
+  const stat = await NodeFSP.lstat(root);
   if (
-    value.installed !== true ||
-    typeof value.release !== "string" ||
-    !/^[-a-zA-Z0-9.]+$/.test(value.release) ||
-    value.app !== app ||
-    value.runtime !== NodePath.join(support, "VerificationRuntime", value.release)
+    !stat.isDirectory() ||
+    stat.isSymbolicLink() ||
+    (platform !== "win32" &&
+      ((stat.uid !== process.getuid!() && stat.uid !== 0) || stat.mode & 0o022))
   )
-    throw new Error("The verification installation does not match this app.");
-  for (const directory of [support, NodePath.join(support, "VerificationRuntime"), value.runtime]) {
-    const stat = await NodeFSP.lstat(directory);
-    if (
-      !stat.isDirectory() ||
-      stat.isSymbolicLink() ||
-      (platform !== "win32" && (stat.uid !== process.getuid!() || stat.mode & 0o022))
-    )
-      throw new Error("The verification directory is not trusted.");
-  }
-  await regular(NodePath.join(value.runtime, "manifest.json"), 65_536);
-  const manifest = JSON.parse(
-    await NodeFSP.readFile(NodePath.join(value.runtime, "manifest.json"), "utf8"),
-  );
+    throw new Error("The bundled verification directory is not trusted.");
+  await regular(NodePath.join(root, "manifest.json"), 65_536, true);
+  const manifest = JSON.parse(await NodeFSP.readFile(NodePath.join(root, "manifest.json"), "utf8"));
   if (
     manifest.version !== 1 ||
-    manifest.release !== value.release ||
+    typeof manifest.release !== "string" ||
+    !/^[-a-zA-Z0-9.]+$/.test(manifest.release) ||
     !Array.isArray(manifest.files) ||
     manifest.files.length === 0 ||
     manifest.files.length > 100
@@ -120,29 +119,29 @@ export async function readManagedRuntime(support: string, app: string, platform:
     )
       throw new Error("The verification runtime manifest is invalid.");
     names.add(item.path);
-    const file = NodePath.join(value.runtime, item.path);
+    const file = NodePath.join(root, item.path);
     // Reject linked ancestors as well as linked files.
     let parent = NodePath.dirname(file);
-    while (parent !== value.runtime) {
+    while (parent !== root) {
       if ((await NodeFSP.lstat(parent)).isSymbolicLink())
         throw new Error("Linked verification code is not accepted.");
       parent = NodePath.dirname(parent);
     }
-    await regular(file);
+    await regular(file, undefined, true);
     if (
       NodeCrypto.createHash("sha256")
         .update(await NodeFSP.readFile(file))
         .digest("hex") !== item.sha256
     )
-      throw new Error("Verification code changed. Run the installer to repair it.");
+      throw new Error("Verification code changed. Replace T3 Attested with a trusted copy.");
   }
   const executable = platform === "win32" ? "node.exe" : "node";
   if (!names.has(executable) || !names.has("start.mjs"))
     throw new Error("The verifier executable is missing.");
   return {
-    root: value.runtime as string,
-    executable: NodePath.join(value.runtime, executable),
-    release: value.release as string,
+    root,
+    executable: NodePath.join(root, executable),
+    release: manifest.release as string,
   };
 }
 
@@ -182,13 +181,14 @@ function probe(origin: string, expectedModel: string): Promise<boolean> {
 
 export function createManagedVerifierRuntime(options: {
   support: string;
-  app: string;
+  resources: string;
   platform: string;
   retireLegacy: () => Promise<void>;
 }) {
   let supervisor: ReturnType<typeof createVerifierSupervisor> | undefined;
   let identity: string | undefined;
   let closed = false;
+  let legacyRetired = false;
   const log = NodePath.join(options.support, "VerificationState", "service.log");
   return {
     ensure(origin: string, modelOrigin: string) {
@@ -211,9 +211,15 @@ export function createManagedVerifierRuntime(options: {
         return Promise.reject(new Error("Verification configuration changed. Restart T3."));
       identity = key;
       supervisor ??= createVerifierSupervisor({
-        probe: () => probe(url.origin, modelOrigin),
+        probe: async () => {
+          if (!legacyRetired) {
+            await options.retireLegacy();
+            legacyRetired = true;
+          }
+          return probe(url.origin, modelOrigin);
+        },
         start: async () => {
-          const runtime = await readManagedRuntime(options.support, options.app, options.platform);
+          const runtime = await readBundledRuntime(options.resources, options.platform);
           const state = NodePath.dirname(log);
           await NodeFSP.mkdir(state, { recursive: true, mode: 0o700 });
           const stat = await NodeFSP.lstat(state);
@@ -228,7 +234,6 @@ export function createManagedVerifierRuntime(options: {
           } catch (error) {
             if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
           }
-          await options.retireLegacy();
           const output = await NodeFSP.open(log, "a", 0o600);
           const env: NodeJS.ProcessEnv = {};
           for (const name of [

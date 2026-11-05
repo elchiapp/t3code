@@ -4,6 +4,7 @@ import * as NodeCrypto from "node:crypto";
 import * as NodeChildProcess from "node:child_process";
 import * as NodeUtil from "node:util";
 import * as NodeURL from "node:url";
+import * as NodeOS from "node:os";
 const execute = NodeUtil.promisify(NodeChildProcess.execFile);
 const digest = (bytes) => NodeCrypto.createHash("sha256").update(bytes).digest("hex");
 export const LABEL = "io.elchiapp.t3attested.verifier";
@@ -67,45 +68,6 @@ export async function verifyRuntime(root, manifest) {
     )
       throw Error("Runtime file does not match its source manifest: " + file.path);
   }
-}
-const xml = (value) =>
-  String(value).replace(
-    /[&<>"']/g,
-    (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&apos;" })[c],
-  );
-export function launchPlist({ runtime, state, home }) {
-  const values = {
-    Label: LABEL,
-    ProgramArguments: [NodePath.join(runtime, "node"), NodePath.join(runtime, "start.mjs")],
-    WorkingDirectory: runtime,
-    RunAtLoad: true,
-    KeepAlive: true,
-    StandardOutPath: NodePath.join(state, "service.log"),
-    StandardErrorPath: NodePath.join(state, "service.log"),
-    EnvironmentVariables: {
-      PATH: "/usr/bin:/bin",
-      HOME: home,
-      T3_ATTESTATION_STATE_DIR: state,
-      DO_NOT_TRACK: "1",
-    },
-  };
-  const encode = (v) =>
-    Array.isArray(v)
-      ? "<array>" + v.map(encode).join("") + "</array>"
-      : typeof v === "object"
-        ? "<dict>" +
-          Object.entries(v)
-            .map(([k, x]) => "<key>" + xml(k) + "</key>" + encode(x))
-            .join("") +
-          "</dict>"
-        : typeof v === "boolean"
-          ? "<" + v + "/>"
-          : "<string>" + xml(v) + "</string>";
-  return (
-    '<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd"><plist version="1.0">' +
-    encode(values) +
-    "</plist>\n"
-  );
 }
 async function exists(p) {
   try {
@@ -231,9 +193,14 @@ export async function installPackage({ payload, home, services }) {
     await NodeFSP.rename(NodePath.join(stage, "T3 Attested.app"), destination);
     newApp = true;
     if (!hadPolicy) await atomicFile(policyPath, JSON.stringify(policy) + "\n");
-    await atomicFile(job, launchPlist({ runtime, state, home }));
-    jobChanged = true;
-    await services.activate({ job, label: LABEL });
+    // The app owns verification now. Retire only the old installer-owned Login Item.
+    await services.stop({ label: LABEL });
+    if (oldJob) {
+      await atomicFile(NodePath.join(backups, "verifier-" + id + ".plist"), oldJob);
+      await NodeFSP.unlink(job);
+      jobChanged = true;
+    }
+    await services.startRuntime({ runtime, state });
     await services.ready({ release: metadata.release });
     const receipt = {
       installed: true,
@@ -251,6 +218,7 @@ export async function installPackage({ payload, home, services }) {
       NodePath.join(support, "installer-receipt.json"),
       JSON.stringify(receipt, null, 2) + "\n",
     );
+    await services.finishRuntime();
     return receipt;
   } catch (error) {
     await services.stop({ label: LABEL }).catch(() => {});
@@ -289,7 +257,25 @@ export function nativeServices() {
       return false;
     }
   };
+  let bootstrapProcess;
+  const finishRuntime = async () => {
+    const child = bootstrapProcess;
+    bootstrapProcess = undefined;
+    if (!child || child.exitCode !== null || child.signalCode !== null) return;
+    await new Promise((resolve) => {
+      const timer = setTimeout(() => {
+        child.kill("SIGKILL");
+        resolve();
+      }, 2000);
+      child.once("exit", () => {
+        clearTimeout(timer);
+        resolve();
+      });
+      child.kill("SIGTERM");
+    });
+  };
   const stop = async ({ label }) => {
+    await finishRuntime();
     if (await loaded(label)) await run(["bootout", target + "/" + label]);
   };
   const activate = async ({ job, label }) => {
@@ -307,6 +293,32 @@ export function nativeServices() {
   return {
     // oxlint-disable-next-line t3code/no-global-process-runtime -- This standalone OS adapter runs before T3 and has no Effect runtime.
     architecture: process.arch,
+    startRuntime: async ({ runtime, state }) => {
+      const output = await NodeFSP.open(NodePath.join(state, "service.log"), "a", 0o600);
+      try {
+        const env = {
+          PATH: "/usr/bin:/bin",
+          HOME: NodeOS.homedir(),
+          T3_ATTESTATION_STATE_DIR: state,
+        };
+        bootstrapProcess = NodeChildProcess.spawn(
+          NodePath.join(runtime, "node"),
+          [NodePath.join(runtime, "start.mjs")],
+          {
+            cwd: runtime,
+            env,
+            stdio: ["ignore", output.fd, output.fd, "ipc"],
+          },
+        );
+        await new Promise((resolve, reject) => {
+          bootstrapProcess.once("spawn", resolve);
+          bootstrapProcess.on("error", reject);
+        });
+      } finally {
+        await output.close();
+      }
+    },
+    finishRuntime,
     verifyApp: async (app) => {
       await execute("/usr/bin/codesign", ["--verify", "--deep", "--strict", app], {
         timeout: 20000,
@@ -368,6 +380,11 @@ export function nativeServices() {
     },
     ready: async ({ release }) => {
       for (let attempt = 0; attempt < 40; attempt++) {
+        if (
+          bootstrapProcess &&
+          (bootstrapProcess.exitCode !== null || bootstrapProcess.signalCode !== null)
+        )
+          throw Error("The verification self-check exited. See VerificationState/service.log.");
         try {
           const response = await fetch("http://127.0.0.1:3420/status", {
             headers: { Connection: "close" },

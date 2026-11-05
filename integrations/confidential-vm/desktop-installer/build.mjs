@@ -15,7 +15,7 @@ const [appSource, sdk, guardSource, clientPolicyFile, nodeSource, outputArgument
 const output = NodePath.resolve(outputArgument ?? "");
 if (!identity)
   throw Error("Usage: build.mjs APP SDK GUARD CLIENT_POLICY NODE OUTPUT SIGNING_IDENTITY");
-const release = "0.1.6-turing.14-air1";
+const release = "0.1.6-turing.15-air1";
 if (NodeFS.existsSync(output)) throw Error("Choose a fresh build directory.");
 await NodeFSP.mkdir(output, { recursive: true });
 const source = (await run("git", ["-C", repo, "rev-parse", "HEAD"])).stdout.trim();

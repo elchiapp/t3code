@@ -26,6 +26,14 @@ const keep = new Set([
   "TMPDIR",
   "LANG",
   "LC_ALL",
+  "SystemRoot",
+  "WINDIR",
+  "ComSpec",
+  "PATHEXT",
+  "APPDATA",
+  "LOCALAPPDATA",
+  "USERPROFILE",
+  "XDG_CONFIG_HOME",
   "T3_ATTESTATION_STATE_DIR",
   "T3_ATTESTATION_PORT",
 ]);
@@ -33,4 +41,6 @@ for (const name of Object.keys(process.env)) if (!keep.has(name)) delete process
 process.env.DO_NOT_TRACK = "1";
 process.env.T3_ATTESTATION_RUNTIME_RELEASE = manifest.release;
 if (!process.env.T3_ATTESTATION_STATE_DIR) throw Error("Private state directory missing");
+// An app-owned helper must not survive a force-quit of its parent.
+if (process.channel) process.once("disconnect", () => process.kill(process.pid, "SIGTERM"));
 await import("./main.mjs");

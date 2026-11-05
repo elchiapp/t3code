@@ -50,6 +50,8 @@ async function fixture() {
     retireLegacy: async () => null,
     restoreLegacy: async () => {},
     activate: async () => {},
+    startRuntime: async () => {},
+    finishRuntime: async () => {},
     ready: async () => {},
     stop: async () => {},
   };
@@ -81,13 +83,19 @@ NodeTest.test(
       const policy = NodePath.join(f.home, ".t3-attested/attestation-client.json");
       NodeAssert.equal((await NodeFSP.stat(policy)).mode & 0o077, 0);
       NodeAssert.deepEqual(JSON.parse(await NodeFSP.readFile(policy, "utf8")), f.policy);
-      const plist = await NodeFSP.readFile(
-        NodePath.join(f.home, "Library/LaunchAgents/io.elchiapp.t3attested.verifier.plist"),
-        "utf8",
+      await NodeAssert.rejects(
+        NodeFSP.stat(
+          NodePath.join(f.home, "Library/LaunchAgents/io.elchiapp.t3attested.verifier.plist"),
+        ),
+        (error) => error.code === "ENOENT",
       );
-      NodeAssert.ok(plist.includes(f.home));
-      NodeAssert.ok(!plist.includes("/Users/marco"));
-      NodeAssert.ok(!plist.includes("SSH_AUTH_SOCK"));
+      const receipt = JSON.parse(
+        await NodeFSP.readFile(
+          NodePath.join(f.home, "Library/Application Support/T3 Attested/installer-receipt.json"),
+          "utf8",
+        ),
+      );
+      NodeAssert.equal(receipt.runtime, r.runtime);
     } finally {
       await f.cleanup();
     }
@@ -149,6 +157,16 @@ NodeTest.test(
       await NodeFSP.writeFile(NodePath.join(data, "history.sentinel"), "history stays");
       const policy = NodePath.join(f.home, ".t3-attested/attestation-client.json");
       await NodeFSP.writeFile(policy, JSON.stringify(f.policy), { mode: 0o600 });
+      const job = NodePath.join(
+        f.home,
+        "Library/LaunchAgents/io.elchiapp.t3attested.verifier.plist",
+      );
+      await NodeFSP.mkdir(NodePath.dirname(job), { recursive: true });
+      await NodeFSP.writeFile(job, "old job sentinel");
+      let restored = false;
+      f.services.activate = async () => {
+        restored = true;
+      };
       f.services.ready = async () => {
         throw Error("startup failed");
       };
@@ -159,6 +177,8 @@ NodeTest.test(
         "history stays",
       );
       NodeAssert.deepEqual(JSON.parse(await NodeFSP.readFile(policy, "utf8")), f.policy);
+      NodeAssert.equal(await NodeFSP.readFile(job, "utf8"), "old job sentinel");
+      NodeAssert.equal(restored, true);
     } finally {
       await f.cleanup();
     }

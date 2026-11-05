@@ -1,3 +1,4 @@
+// @effect-diagnostics nodeBuiltinImport:off -- Native certificate, device authentication and managed verifier lifecycle boundary.
 import {
   AttestationVersionReview,
   DeviceVersionDecisionRecord,
@@ -17,6 +18,9 @@ import * as ByteSize from "effect/ByteSize";
 import * as HttpClient from "effect/http/HttpClient";
 import * as HttpIncomingMessage from "effect/http/HttpIncomingMessage";
 import * as NodeOS from "node:os";
+import * as NodeChildProcess from "node:child_process";
+import * as NodeUtil from "node:util";
+import { createManagedVerifierRuntime } from "./verifierRuntime.ts";
 import * as NodeTls from "node:tls";
 // @effect-diagnostics-next-line nodeBuiltinImport:off -- Effect Crypto cannot parse an X.509 public key.
 import * as NodeCrypto from "node:crypto";
@@ -78,6 +82,7 @@ export class DesktopAttestation extends Context.Service<
     ) => Effect.Effect<"approved" | "revoked" | "cancelled">;
     readonly configureAuthentication: Effect.Effect<boolean>;
     readonly installConnectionGate: Effect.Effect<void>;
+    readonly shutdown: Effect.Effect<void>;
   }
 >()("@t3tools/desktop/attestation/DesktopAttestation") {}
 
@@ -94,7 +99,7 @@ const make = Effect.gen(function* () {
   const http = yield* HttpClient.HttpClient;
   const windows = yield* ElectronWindow.ElectronWindow;
   const policyPath = environment.path.join(environment.baseDir, "attestation-client.json");
-  const services = {
+  const services: Parameters<typeof createDesktopVerifier>[0] = {
     readPolicy: () =>
       runPromise(
         Effect.gen(function* () {
@@ -111,8 +116,10 @@ const make = Effect.gen(function* () {
           return yield* decodePolicyText(yield* files.readFileString(policyPath));
         }),
       ),
-    readStatus: (origin: string) =>
-      runPromise(
+    readStatus: async (origin: string) => {
+      const policy = decodeDevicePolicy(await services.readPolicy());
+      await runtime.ensure(origin, policy.modelOrigin);
+      return runPromise(
         http.get(origin + "/status").pipe(
           Effect.flatMap((response) =>
             Effect.gen(function* () {
@@ -124,7 +131,8 @@ const make = Effect.gen(function* () {
           Effect.provideService(HttpIncomingMessage.MaxBodySize, ByteSize.kibibytes(128)),
           Effect.timeout("4 seconds"),
         ),
-      ),
+      );
+    },
     refresh: (origin: string) =>
       runPromise(
         http.post(origin + "/refresh").pipe(
@@ -141,6 +149,23 @@ const make = Effect.gen(function* () {
       return Buffer.from(await runPromise(crypto.digest("SHA-256", key))).toString("hex");
     },
   };
+  const runtime = createManagedVerifierRuntime({
+    support: environment.path.join(environment.appDataDirectory, "T3 Attested"),
+    app:
+      environment.platform === "darwin"
+        ? environment.path.dirname(environment.path.dirname(environment.resourcesPath))
+        : environment.path.dirname(environment.resourcesPath),
+    platform: environment.platform,
+    retireLegacy: async () => {
+      if (environment.platform !== "darwin") return;
+      // Only the installer-owned job is retired; custom verifier services remain untouched.
+      await NodeUtil.promisify(NodeChildProcess.execFile)(
+        "/bin/launchctl",
+        ["bootout", `gui/${NodeOS.userInfo().uid}/io.elchiapp.t3attested.verifier`],
+        { timeout: 5000 },
+      ).catch(() => {});
+    },
+  });
   const verify = createDesktopVerifier(services);
   const verifyCertificate = createCertificateVerifier(services);
   const newId = () => runPromise(crypto.randomUUIDv4().pipe(Effect.orDie));
@@ -164,6 +189,7 @@ const make = Effect.gen(function* () {
       !/^[a-f0-9]{64}$/.test(policy.tlsSpkiSha256 ?? "")
     )
       throw new Error("The trusted device verifier is not configured.");
+    await runtime.ensure(verifier.origin, policy.modelOrigin);
     return { ...policy, verifierOrigin: verifier.origin };
   };
   const publicJson = (url: string) =>
@@ -245,7 +271,17 @@ const make = Effect.gen(function* () {
     newId,
   );
   return DesktopAttestation.of({
+    shutdown: Effect.sync(() => runtime.stop()),
     installConnectionGate: Effect.sync(() => {
+      Electron.app.once("will-quit", () => runtime.stop());
+      void services
+        .readPolicy()
+        .then((raw) => {
+          if (raw === null) return;
+          const policy = decodeDevicePolicy(raw);
+          return runtime.ensure(policy.verifierOrigin, policy.modelOrigin);
+        })
+        .catch(() => {});
       Electron.session.defaultSession.setCertificateVerifyProc((request, callback) => {
         const check = async () => {
           const key = new NodeCrypto.X509Certificate(request.certificate.data).publicKey.export({

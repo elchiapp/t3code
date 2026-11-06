@@ -168,6 +168,17 @@ describe("desktop device verifier boundary", () => {
       },
     });
     expect((await verify({ origin })).phase).toBe("failed");
+    const remoteMac = await createDesktopVerifier({
+      ...services(),
+      readPolicy: async () => ({ ...policy, inferenceOrigin: "https://inference.example" }),
+      readStatus: async () => {
+        throw new Error("Local verifier is unreachable");
+      },
+    })({ origin: "https://mac.example" });
+    expect(remoteMac.checks.environment_connection?.state).toBe("not_configured");
+    expect(remoteMac.checks.verification_service?.detail).toContain(
+      "Local verifier is unreachable",
+    );
   });
   it("permits an explicitly configured loopback T3 without a remote TLS probe", async () => {
     let probes = 0;

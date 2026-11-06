@@ -96,3 +96,45 @@ describe("composer attestation colors", () => {
     ).toBe("red");
   });
 });
+
+it("leads with the failed check and next action, separate from version approval", () => {
+  const status = {
+    ...complete(),
+    phase: "failed" as const,
+    checks: {
+      ...complete().checks,
+      environment_connection: { state: "not_configured" },
+      hardware: {
+        state: "failed",
+        detail: "No accepted fresh hardware proof: Evidence endpoint returned HTTP 429",
+      },
+      tls_key_commitment: { state: "unavailable" },
+    },
+  };
+  const report = attestationReport(status, false, "MacBook", {
+    instanceId: "tinfoil",
+    label: "Tinfoil",
+  });
+  expect(report.label).toBe("VM proof service is busy");
+  expect(report.summary).toContain("Wait a few seconds");
+  expect(report.sections[0]?.result).toBe("Not attested");
+  expect(report.sections[0]?.rows).toHaveLength(1);
+  expect(report.sections[1]?.result).toBe("Verified");
+  expect(report.needsApproval).toBe(false);
+  const failedInference = attestationReport(
+    {
+      ...status,
+      checks: {
+        ...status.checks,
+        hardware: { state: "verified" },
+        tls_key_commitment: { state: "verified" },
+        inference: { state: "failed", detail: "Enclave signature mismatch" },
+      },
+    },
+    false,
+    "MacBook",
+    { instanceId: "tinfoil", label: "Tinfoil" },
+  );
+  expect(failedInference.label).toBe("Tinfoil verification failed");
+  expect(failedInference.summary).toContain("Enclave signature mismatch");
+});

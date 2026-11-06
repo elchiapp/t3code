@@ -28,6 +28,7 @@ export function AttestationIndicator({
   provider?: AttestationProvider | undefined;
 }) {
   const [open, setOpen] = useState(false);
+  const [versionsOpen, setVersionsOpen] = useState(false);
   // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- A blocked send requests the native review popover through the shared authorization gate.
   useEffect(
     () =>
@@ -50,7 +51,13 @@ export function AttestationIndicator({
       className="flex min-h-6 items-center px-1 text-xs text-muted-foreground"
       data-attestation-state={state}
     >
-      <Popover open={open} onOpenChange={setOpen}>
+      <Popover
+        open={open}
+        onOpenChange={(next) => {
+          setOpen(next);
+          if (!next) setVersionsOpen(false);
+        }}
+      >
         <PopoverTrigger
           render={
             <button
@@ -85,7 +92,7 @@ export function AttestationIndicator({
         <PopoverPopup width="md" align="start">
           <div className="max-h-[min(75vh,42rem)] space-y-4 overflow-y-auto text-xs">
             <p role="status">{report.summary}</p>
-            {report.reviewComponents.length > 0 && (
+            {report.needsApproval && report.reviewComponents.length > 0 && (
               <AttestationVersionReview
                 key={status.targets?.vmOrigin ?? status.origin}
                 origin={status.targets?.vmOrigin ?? status.origin}
@@ -102,18 +109,56 @@ export function AttestationIndicator({
                 </Button>
               </div>
             )}
-            <div className="space-y-1 text-muted-foreground">
+            <dl className="space-y-3">
               {report.sections.map((section) => (
-                <p key={section.title}>
-                  <span className="font-medium text-foreground">
-                    {section.title === "Agent environment" ? "Environment" : "AI service"}:
-                  </span>{" "}
-                  {section.name}
-                </p>
+                <div key={section.title} className="flex items-start justify-between gap-3">
+                  <dt>
+                    <span className="block text-muted-foreground">
+                      {section.title === "Agent environment" ? "Agents run on" : "AI service"}
+                    </span>
+                    {section.name}
+                  </dt>
+                  <dd className="inline-flex shrink-0 items-center gap-1.5">
+                    <span
+                      aria-hidden="true"
+                      className={cn(
+                        "size-1.5 rounded-full",
+                        section.tone === "green"
+                          ? "bg-success"
+                          : section.tone === "red"
+                            ? "bg-error"
+                            : section.tone === "gray"
+                              ? "bg-muted-foreground"
+                              : "bg-warning",
+                      )}
+                    />
+                    {section.result}
+                  </dd>
+                </div>
               ))}
-            </div>
+            </dl>
+            <Button size="sm" variant="outline" onClick={onRetry} disabled={report.pending}>
+              Check again
+            </Button>
+            {!report.needsApproval && report.reviewComponents.length > 0 && (
+              <details
+                open={versionsOpen}
+                onToggle={(event) => setVersionsOpen(event.currentTarget.open)}
+              >
+                <summary className="cursor-pointer">Approved versions</summary>
+                {versionsOpen && (
+                  <AttestationVersionReview
+                    key={status.targets?.vmOrigin ?? status.origin}
+                    origin={status.targets?.vmOrigin ?? status.origin}
+                    onChanged={onRetry}
+                    components={report.reviewComponents}
+                    management
+                  />
+                )}
+              </details>
+            )}
             <details>
-              <summary className="cursor-pointer font-medium">Verification details</summary>
+              <summary className="cursor-pointer font-medium">Technical details</summary>
               <div className="mt-3 space-y-4">
                 {report.sections.map((section) => (
                   <section key={section.title} className="space-y-2 border-b pb-3 last:border-0">
@@ -147,17 +192,15 @@ export function AttestationIndicator({
                             />
                             {row.result}
                           </dd>
-                          <dd className="col-span-2 text-muted-foreground">{row.explanation}</dd>
-                          {row.detail && (
-                            <dd className="col-span-2">
-                              <details>
-                                <summary className="cursor-pointer text-muted-foreground">
-                                  Proof details
-                                </summary>
-                                <p className="mt-1 break-words">{row.detail}</p>
-                              </details>
-                            </dd>
-                          )}
+                          <dd className="col-span-2">
+                            <details>
+                              <summary className="cursor-pointer text-muted-foreground">
+                                About this check
+                              </summary>
+                              <p className="mt-1 text-muted-foreground">{row.explanation}</p>
+                              {row.detail && <p className="mt-1 break-words">{row.detail}</p>}
+                            </details>
+                          </dd>
                         </div>
                       ))}
                     </dl>
@@ -169,9 +212,6 @@ export function AttestationIndicator({
                 </p>
               </div>
             </details>
-            <Button size="sm" variant="outline" onClick={onRetry} disabled={report.pending}>
-              Check again
-            </Button>
           </div>
         </PopoverPopup>
       </Popover>

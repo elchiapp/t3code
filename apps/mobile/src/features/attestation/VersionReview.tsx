@@ -34,11 +34,13 @@ export function VersionReview({
   onChanged,
   components = allComponents,
   needsApproval = false,
+  management = false,
 }: {
   origin: string;
   onChanged: () => void;
   components?: ReadonlyArray<Review["component"]>;
   needsApproval?: boolean;
+  management?: boolean;
 }) {
   const [reviews, setReviews] = useState<ReadonlyArray<Review>>([]);
   const [busy, setBusy] = useState(true);
@@ -146,7 +148,6 @@ export function VersionReview({
   );
 
   const [expanded, setExpanded] = useState<ReadonlySet<string>>(new Set());
-  const [manageOpen, setManageOpen] = useState(false);
   if (!available) return null;
   const toggle = (id: string) =>
     setExpanded((previous) => {
@@ -206,7 +207,7 @@ export function VersionReview({
     <View className="gap-3">
       <View className="flex-row items-center justify-between gap-2">
         <Text accessibilityRole="header" className="text-lg font-semibold">
-          Updates
+          {management ? "Saved approvals" : "Updates"}
         </Text>
         {(errorDetails || pending.some((review) => !review.eligible)) && (
           <Pressable accessibilityRole="button" disabled={busy} onPress={() => void inspect()}>
@@ -224,7 +225,7 @@ export function VersionReview({
           Checking update information…
         </Text>
       )}
-      {!busy && !message && reviews.length > 0 && pending.length === 0 && (
+      {!management && !busy && !message && reviews.length > 0 && pending.length === 0 && (
         <Text className="text-sm">No updates need approval.</Text>
       )}
       {pending.map((review) => (
@@ -261,28 +262,20 @@ export function VersionReview({
           {expanded.has(review.id) && details(review)}
         </View>
       ))}
-      {approved.length > 0 && (
-        <View className="gap-3">
+      {approved.map((review) => (
+        <View key={review.id} className="gap-2 rounded-xl border border-border p-3">
           <Pressable
             accessibilityRole="button"
-            accessibilityState={{ expanded: manageOpen }}
-            onPress={() => setManageOpen((value) => !value)}
+            accessibilityState={{ expanded: expanded.has(review.id) }}
+            onPress={() => toggle(review.id)}
           >
-            <Text className="text-sm font-semibold">
-              Manage approved versions ({approved.length})
+            <Text className="font-semibold">
+              {reviewName(review)} · {review.version} · Approved
             </Text>
           </Pressable>
-          {manageOpen &&
-            approved.map((review) => (
-              <View key={review.id} className="gap-2 rounded-xl border border-border p-3">
-                <Text className="font-semibold">
-                  {reviewName(review)} · {review.version} · Approved
-                </Text>
-                {details(review)}
-              </View>
-            ))}
+          {expanded.has(review.id) && details(review)}
         </View>
-      )}
+      ))}
       {errorDetails && (
         <View className="gap-2">
           <Pressable accessibilityRole="button" onPress={() => toggle("error")}>

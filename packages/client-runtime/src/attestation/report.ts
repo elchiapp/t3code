@@ -37,6 +37,48 @@ function result(state?: string): string {
   }
 }
 
+function verificationIssue(
+  status: AttestationStatus,
+  keys: ReadonlyArray<string>,
+  provider: string,
+) {
+  const key = ["verification_service", ...keys].find((name) =>
+    ["failed", "unavailable", "expired"].includes(status.checks[name]?.state ?? ""),
+  );
+  const check = key ? status.checks[key] : undefined;
+  const rawDetail = check?.detail?.replace(/\s+/g, " ").slice(0, 220);
+  const detail = rawDetail && !/[.!?]$/.test(rawDetail) ? rawDetail + "." : rawDetail;
+  if (/HTTP 429|rate.limit|too many requests/i.test(detail ?? ""))
+    return {
+      title: key === "inference" ? `${provider} verification is busy` : "VM proof service is busy",
+      summary: "Wait a few seconds, then check again. Your version approvals have not changed.",
+    };
+  if (key === "verification_service")
+    return {
+      title: "Local verifier is unavailable",
+      summary: detail ? `${detail} Restart T3 or check again.` : "Restart T3, then check again.",
+    };
+  if (check?.state === "expired" || status.phase === "expired")
+    return {
+      title: "Verification expired",
+      summary: "The last check is too old. Check again to get fresh evidence.",
+    };
+  const name =
+    key === "inference"
+      ? provider
+      : key === "hardware"
+        ? "VM hardware"
+        : key === "tls_key_commitment" || key === "environment_connection"
+          ? "VM connection"
+          : "Connection";
+  return {
+    title: `${name} verification failed`,
+    summary: detail
+      ? `${detail} Check again.`
+      : "The check did not complete. Check again; technical details are below.",
+  };
+}
+
 export function attestationReport(
   status: AttestationStatus,
   canSend: boolean,
@@ -106,14 +148,20 @@ export function attestationReport(
       detail: status.checks[key]?.detail,
     };
   };
-  const unconfiguredEnvironment = status.checks.environment_connection?.state === "not_configured";
+  const unconfiguredEnvironment =
+    status.checks.environment_connection?.state === "not_configured" ||
+    (!local && targets !== undefined && status.origin !== targets.vmOrigin);
   const platformRows = unconfiguredEnvironment
     ? [
-        row(
-          "environment_connection",
-          "Environment attestation",
-          "No trusted attestation verifier is configured for this environment. This is not a failed verification.",
-        ),
+        {
+          ...row(
+            "environment_connection",
+            "Environment attestation",
+            "No trusted attestation verifier is configured for this environment. This is not a failed verification.",
+          ),
+          result: "Not configured",
+          tone: "gray" as const,
+        },
       ]
     : local
       ? [
@@ -261,6 +309,7 @@ export function attestationReport(
     reviewComponents.includes("inference-release") &&
     scopedStatus.checks.inference?.state === "approval_required";
   const needsApproval = firmwareApproval || inferenceApproval;
+  const issue = verificationIssue(scopedStatus, scope.required, providerName);
   const actionableLabel =
     firmwareApproval && inferenceApproval
       ? "Updates need approval"
@@ -269,18 +318,18 @@ export function attestationReport(
         : inferenceApproval
           ? `${providerName} update needs approval`
           : tone === "red"
-            ? "Verification needs attention"
+            ? issue.title
             : label;
   const summary = needsApproval
     ? "A new version is waiting for your approval."
     : pending
       ? "Checking your connection…"
       : tone === "red"
-        ? "We couldn't verify this connection. Check again or open details."
+        ? issue.summary
         : tone === "gray"
           ? "Verification is not available for this selection."
           : tone === "yellow"
-            ? "Some checks are not covered. Open details to see which ones."
+            ? "Hardware checks passed. Software and request routing remain trusted assumptions."
             : "The available checks passed.";
   return {
     label: actionableLabel,
@@ -297,6 +346,19 @@ export function attestationReport(
         name: environmentLabel ?? status.origin,
         origin: status.origin,
         summary: platformSummary,
+        result: unconfiguredEnvironment
+          ? "Not attested"
+          : local
+            ? "Local device"
+            : platformPassed
+              ? "Verified"
+              : "Not verified",
+        tone:
+          unconfiguredEnvironment || local
+            ? ("gray" as const)
+            : platformPassed
+              ? ("green" as const)
+              : ("red" as const),
         rows: platformRows,
       },
       {
@@ -304,6 +366,18 @@ export function attestationReport(
         name: directService ?? providerName,
         origin: covered ? targets?.inferenceOrigin : undefined,
         summary: covered ? "Confidential compute" : inferenceResult,
+        result: directService ? "No TEE" : !covered ? "Not configured" : inferenceResult,
+        tone:
+          directService ||
+          !covered ||
+          missingAttestation(inferenceState) ||
+          (inferenceState === undefined && !targets)
+            ? ("gray" as const)
+            : inferenceResult === "Verified"
+              ? ("green" as const)
+              : pending
+                ? ("yellow" as const)
+                : ("red" as const),
         route: covered && targets ? `Via inference proxy: ${targets.proxyOrigin}` : undefined,
         rows: inferenceRows,
       },

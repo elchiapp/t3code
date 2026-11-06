@@ -52,6 +52,7 @@ describe("attestation status in the composer", () => {
       <AttestationIndicator status={partial} canSend onRetry={() => {}} />,
     );
     await screen.getByRole("button", { name: "Attestation incomplete" }).click();
+    await page.getByText("Technical details", { exact: true }).click();
     await expect.element(page.getByText("VM software", { exact: true })).toBeVisible();
     await expect.element(page.getByText("Exclusive key custody", { exact: true })).toBeVisible();
     await expect.element(page.getByText("Actual request routing", { exact: true })).toBeVisible();
@@ -88,6 +89,7 @@ describe("attestation status in the composer", () => {
       />,
     );
     await screen.getByRole("button", { name: /Local device · Tinfoil/ }).click();
+    await page.getByText("Technical details", { exact: true }).click();
     await expect.element(page.getByRole("heading", { name: "Agent environment" })).toBeVisible();
     await expect.element(page.getByRole("heading", { name: "Inference endpoint" })).toBeVisible();
     await expect.element(page.getByText("Tinfoil", { exact: true })).toBeVisible();
@@ -166,7 +168,7 @@ describe("attestation status in the composer", () => {
     overridden = true;
     snapshot.mockReturnValue(state("failed"));
     notify();
-    await screen.getByRole("button", { name: "Verification failed" }).click();
+    await screen.getByRole("button", { name: /Connection verification failed/ }).click();
     await expect
       .element(
         page.getByText(
@@ -196,7 +198,9 @@ describe("attestation status in the composer", () => {
     await screen.rerender(
       <AttestationIndicator status={state("failed")} canSend={false} onRetry={retry} />,
     );
-    await expect.element(screen.getByRole("button", { name: "Verification failed" })).toBeVisible();
+    await expect
+      .element(screen.getByRole("button", { name: /Connection verification failed/ }))
+      .toBeVisible();
     const complete = {
       ...state("verified"),
       checks: {
@@ -211,29 +215,48 @@ describe("attestation status in the composer", () => {
       .element(screen.getByRole("button", { name: "Attestation verified" }))
       .toBeVisible();
   });
-  it("opens the proof details and exposes an explicit retry", async () => {
+  it("shows the cause before technical details and exposes an explicit retry", async () => {
     const retry = vi.fn();
+    const failed = {
+      ...state("failed"),
+      checks: {
+        ...state("failed").checks,
+        inference: { state: "failed", detail: "Enclave signature mismatch" },
+      },
+    };
     await using screen = await render(
-      <AttestationIndicator status={state("failed")} canSend={false} onRetry={retry} />,
+      <AttestationIndicator
+        status={failed}
+        canSend={false}
+        onRetry={retry}
+        provider={{ instanceId: "tinfoil", label: "Tinfoil" }}
+      />,
     );
-    await screen.getByRole("button", { name: "Verification failed" }).click();
-    await expect.element(page.getByText("VM hardware", { exact: true })).toBeVisible();
-    await expect.element(page.getByText("Connection key", { exact: true })).toBeVisible();
-    await page.getByRole("button", { name: "Check again" }).click();
+    await screen.getByRole("button", { name: /Tinfoil verification failed/ }).click();
+    await expect
+      .element(page.getByText("Enclave signature mismatch. Check again.", { exact: true }))
+      .toBeVisible();
+    await expect.element(page.getByText("VM hardware", { exact: true })).not.toBeVisible();
+    await expect
+      .element(page.getByText("No updates need approval.", { exact: true }))
+      .not.toBeInTheDocument();
+    await page.getByRole("button", { name: "Check again", exact: true }).click();
     expect(retry).toHaveBeenCalledOnce();
+    await page.getByText("Technical details", { exact: true }).click();
+    await expect.element(page.getByText("VM hardware", { exact: true })).toBeVisible();
   });
   it("does not display unavailable or expired verification as a pass", async () => {
     await using screen = await render(
       <AttestationIndicator status={state("unavailable")} canSend={false} onRetry={() => {}} />,
     );
     await expect
-      .element(screen.getByRole("button", { name: "Verification unavailable" }))
+      .element(screen.getByRole("button", { name: /Connection verification failed/ }))
       .toBeVisible();
     await screen.rerender(
       <AttestationIndicator status={state("expired")} canSend={false} onRetry={() => {}} />,
     );
     await expect
-      .element(screen.getByRole("button", { name: "Verification expired" }))
+      .element(screen.getByRole("button", { name: /Verification expired/ }))
       .toBeVisible();
   });
 });

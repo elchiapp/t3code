@@ -75,14 +75,15 @@ export function createDesktopVerifier(services: {
       ...(policy.inferenceOrigin ? { inferenceOrigin: policy.inferenceOrigin } : {}),
       inferenceProviderIds: policy.inferenceProviderIds ?? ["tinfoil"],
     };
+    const environmentCovered = policy.allowedEnvironmentOrigins.includes(request.origin);
     const failure = (phase: "failed" | "unavailable", message: string): AttestationStatus => ({
       ...failed(phase, message),
       targets,
+      checks: environmentCovered ? {} : { environment_connection: { state: "not_configured" } },
     });
     try {
       const origin = originOf(request.origin);
       if (request.origin !== origin) return failure("failed", "Invalid environment origin.");
-      const environmentCovered = policy.allowedEnvironmentOrigins.includes(origin);
       if (!environmentCovered && !policy.inferenceOrigin)
         return {
           ...failure("unavailable", "Verification is not configured for this environment."),
@@ -242,11 +243,21 @@ export function createDesktopVerifier(services: {
             : proof.checks.environment_connection!,
         },
       };
-    } catch {
-      return failure(
-        "failed",
-        "Device verification is unavailable. Sending requires an explicit override.",
-      );
+    } catch (cause) {
+      const status = failure("failed", "The local verifier could not complete the check.");
+      return {
+        ...status,
+        checks: {
+          ...status.checks,
+          verification_service: {
+            state: "unavailable",
+            detail:
+              cause instanceof Error
+                ? cause.message.slice(0, 400)
+                : "Verification service unavailable.",
+          },
+        },
+      };
     }
   };
 }

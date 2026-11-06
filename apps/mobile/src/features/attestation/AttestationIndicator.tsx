@@ -30,6 +30,8 @@ export function AttestationIndicator({
 }) {
   const [showDetails, setShowDetails] = useState(false);
   const [proofsExpanded, setProofsExpanded] = useState(false);
+  const [versionsOpen, setVersionsOpen] = useState(false);
+  const [expandedChecks, setExpandedChecks] = useState<ReadonlySet<string>>(new Set());
   useFocusEffect(
     useCallback(
       () =>
@@ -67,17 +69,23 @@ export function AttestationIndicator({
         </Text>
       </Pressable>
       {showDetails && (
-        <Sheet title="Verification" onClose={() => setShowDetails(false)}>
+        <Sheet
+          title="Verification"
+          onClose={() => {
+            setShowDetails(false);
+            setVersionsOpen(false);
+          }}
+        >
           <ScrollView
             className="flex-1"
             nestedScrollEnabled
             contentInsetAdjustmentBehavior="automatic"
-            contentContainerStyle={{ padding: 20, paddingBottom: 40, gap: 24 }}
+            contentContainerStyle={{ padding: 20, paddingBottom: 40, gap: 16 }}
           >
             <Text accessibilityLiveRegion="polite" className="text-sm">
               {report.summary}
             </Text>
-            {report.reviewComponents.length > 0 && (
+            {report.needsApproval && report.reviewComponents.length > 0 && (
               <VersionReview
                 key={status.targets?.vmOrigin ?? status.origin}
                 origin={status.targets?.vmOrigin ?? status.origin}
@@ -100,20 +108,65 @@ export function AttestationIndicator({
                 </Pressable>
               </View>
             )}
-            <View className="gap-1">
+            <View className="gap-3">
               {report.sections.map((section) => (
-                <Text key={section.title} className="text-sm text-foreground-muted">
-                  {section.title === "Agent environment" ? "Environment" : "AI service"}:{" "}
-                  {section.name}
-                </Text>
+                <View key={section.title} className="flex-row items-start gap-3">
+                  <View className="flex-1">
+                    <Text className="text-xs text-foreground-muted">
+                      {section.title === "Agent environment" ? "Agents run on" : "AI service"}
+                    </Text>
+                    <Text className="text-sm">{section.name}</Text>
+                  </View>
+                  <Text
+                    className={
+                      section.tone === "green"
+                        ? "text-sm text-adaptive-emerald-700-300"
+                        : section.tone === "red"
+                          ? "text-sm text-danger-foreground"
+                          : section.tone === "gray"
+                            ? "text-sm text-foreground-muted"
+                            : "text-sm text-warning-foreground"
+                    }
+                  >
+                    ● {section.result}
+                  </Text>
+                </View>
               ))}
             </View>
+            <Pressable
+              accessibilityRole="button"
+              onPress={retry}
+              disabled={report.pending}
+              className="rounded-xl bg-card-alt px-4 py-3"
+            >
+              <Text className="text-center font-semibold">Check again</Text>
+            </Pressable>
+            {!report.needsApproval && report.reviewComponents.length > 0 && (
+              <View className="gap-3">
+                <Pressable
+                  accessibilityRole="button"
+                  accessibilityState={{ expanded: versionsOpen }}
+                  onPress={() => setVersionsOpen((value) => !value)}
+                >
+                  <Text className="text-sm font-semibold">Approved versions</Text>
+                </Pressable>
+                {versionsOpen && (
+                  <VersionReview
+                    key={status.targets?.vmOrigin ?? status.origin}
+                    origin={status.targets?.vmOrigin ?? status.origin}
+                    onChanged={retry}
+                    components={report.reviewComponents}
+                    management
+                  />
+                )}
+              </View>
+            )}
             <Pressable
               accessibilityRole="button"
               accessibilityState={{ expanded: proofsExpanded }}
               onPress={() => setProofsExpanded((value) => !value)}
             >
-              <Text className="text-sm font-semibold">Verification details</Text>
+              <Text className="text-sm font-semibold">Technical details</Text>
             </Pressable>
             {proofsExpanded && (
               <View className="gap-4">
@@ -149,9 +202,30 @@ export function AttestationIndicator({
                             {row.title}: {row.result}
                           </Text>
                         </View>
-                        <Text className="text-sm text-foreground-muted">{row.explanation}</Text>
-                        {row.detail && (
-                          <Text className="text-sm text-foreground-muted">{row.detail}</Text>
+                        <Pressable
+                          accessibilityRole="button"
+                          accessibilityState={{
+                            expanded: expandedChecks.has(section.title + row.title),
+                          }}
+                          onPress={() =>
+                            setExpandedChecks((current) => {
+                              const next = new Set(current);
+                              const key = section.title + row.title;
+                              if (next.has(key)) next.delete(key);
+                              else next.add(key);
+                              return next;
+                            })
+                          }
+                        >
+                          <Text className="text-xs text-foreground-muted">About this check</Text>
+                        </Pressable>
+                        {expandedChecks.has(section.title + row.title) && (
+                          <View className="gap-1">
+                            <Text className="text-sm text-foreground-muted">{row.explanation}</Text>
+                            {row.detail && (
+                              <Text className="text-sm text-foreground-muted">{row.detail}</Text>
+                            )}
+                          </View>
                         )}
                       </View>
                     ))}
@@ -163,14 +237,6 @@ export function AttestationIndicator({
                 </Text>
               </View>
             )}
-            <Pressable
-              accessibilityRole="button"
-              onPress={retry}
-              disabled={report.pending}
-              className="rounded-xl bg-card-alt px-4 py-3"
-            >
-              <Text className="text-center font-semibold">Check again</Text>
-            </Pressable>
           </ScrollView>
         </Sheet>
       )}

@@ -34,11 +34,13 @@ export function AttestationVersionReview({
   onChanged,
   components = allComponents,
   needsApproval = false,
+  management = false,
 }: {
   origin: string;
   onChanged: () => void;
   components?: ReadonlyArray<Review["component"]>;
   needsApproval?: boolean;
+  management?: boolean;
 }) {
   const [reviews, setReviews] = useState<ReadonlyArray<Review>>([]);
   const [busy, setBusy] = useState(true);
@@ -186,7 +188,7 @@ export function AttestationVersionReview({
   return (
     <section className="space-y-3">
       <div className="flex items-center justify-between gap-2">
-        <h3 className="font-semibold">Updates</h3>
+        <h3 className="font-semibold">{management ? "Saved approvals" : "Updates"}</h3>
         {(errorDetails || pending.some((review) => !review.eligible)) && (
           <Button size="sm" variant="ghost" disabled={busy} onClick={() => void inspect()}>
             {busy ? "Checking…" : "Try again"}
@@ -199,7 +201,7 @@ export function AttestationVersionReview({
         </p>
       )}
       {busy && reviews.length === 0 && <p role="status">Checking update information…</p>}
-      {!busy && !message && reviews.length > 0 && pending.length === 0 && (
+      {!management && !busy && !message && reviews.length > 0 && pending.length === 0 && (
         <p>No updates need approval.</p>
       )}
       {pending.map((review) => (
@@ -234,19 +236,16 @@ export function AttestationVersionReview({
         </section>
       ))}
       {approved.length > 0 && (
-        <details>
-          <summary className="cursor-pointer">Manage approved versions ({approved.length})</summary>
-          <div className="mt-2 space-y-3">
-            {approved.map((review) => (
-              <section key={review.id} className="space-y-2 rounded border p-3">
-                <p className="font-medium">
-                  {reviewName(review)} · {review.version} · Approved
-                </p>
-                {details(review)}
-              </section>
-            ))}
-          </div>
-        </details>
+        <div className="space-y-2">
+          {approved.map((review) => (
+            <details key={review.id} className="rounded border p-3">
+              <summary className="cursor-pointer font-medium">
+                {reviewName(review)} · {review.version} · Approved
+              </summary>
+              {details(review)}
+            </details>
+          ))}
+        </div>
       )}
       {errorDetails && (
         <details>

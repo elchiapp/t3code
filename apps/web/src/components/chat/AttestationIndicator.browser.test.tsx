@@ -27,8 +27,8 @@ const state = (phase: AttestationStatus["phase"]): AttestationStatus => ({
     phase === "verified"
       ? "VM hardware and Tinfoil verified"
       : "Verification is required before sending.",
-  verifiedAt: null,
-  expiresAt: null,
+  verifiedAt: phase === "verified" ? 0 : null,
+  expiresAt: phase === "verified" ? 60000 : null,
   checks: {
     environment_connection: { state: "verified" },
     hardware: { state: "verified" },
@@ -219,6 +219,11 @@ describe("attestation status in the composer", () => {
     const retry = vi.fn();
     const failed = {
       ...state("failed"),
+      targets: {
+        vmOrigin: "https://vm.example:8446",
+        proxyOrigin: "https://vm.example:8447",
+        inferenceProviderIds: ["tinfoil"],
+      },
       checks: {
         ...state("failed").checks,
         inference: { state: "failed", detail: "Enclave signature mismatch" },

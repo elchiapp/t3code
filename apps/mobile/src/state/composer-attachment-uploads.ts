@@ -140,9 +140,12 @@ export function createComposerAttachmentUploadWorker(
       const queued = flattenQueuedThreadMessages(
         appAtomRegistry.get(threadOutboxManager.queuedMessagesByThreadKeyAtom),
       );
+      const knownEnvironmentIds = appAtomRegistry
+        .get(workspaceConnections.environmentsAtom)
+        .map((environment) => environment.environmentId);
       const owner = Object.entries(appAtomRegistry.get(composerDraftsAtom)).find(
         ([key, draft]) =>
-          composerDraftEnvironmentId(key, queued, draft) === environmentId &&
+          composerDraftEnvironmentId(key, knownEnvironmentIds, queued, draft) === environmentId &&
           draft.attachments.some((candidate) => candidate.id === attachment.id),
       );
       const attestationThreadId = owner ? mobileAttestationThread(owner[0], queued) : null;

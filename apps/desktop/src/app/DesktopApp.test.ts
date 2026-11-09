@@ -24,6 +24,7 @@ vi.mock("../updates/DesktopRemoteUpdates.ts", () => ({ listen: Effect.void }));
 vi.mock("./DesktopStartupRecovery.ts", () => ({ listen: Effect.void }));
 
 import * as DesktopApp from "./DesktopApp.ts";
+import * as DesktopAttestation from "../attestation/DesktopAttestation.ts";
 import * as DesktopAppActivation from "./DesktopAppActivation.ts";
 import * as DesktopAppIdentity from "./DesktopAppIdentity.ts";
 import * as DesktopClerk from "./DesktopClerk.ts";
@@ -92,6 +93,14 @@ it.effect.each([false, true])(
       const runApp = DesktopApp.program
         .pipe(
           Effect.provide(NodeCrypto.layer),
+          Effect.provideService(DesktopAttestation.DesktopAttestation, {
+            installConnectionGate: Effect.void,
+            shutdown: Effect.void,
+            get: () => Effect.die("unexpected attestation request"),
+            reviewVersions: () => Effect.die("unexpected version review"),
+            decideVersion: () => Effect.die("unexpected version decision"),
+            configureAuthentication: Effect.die("unexpected authentication request"),
+          }),
           Effect.provideService(DesktopAppIdentity.DesktopAppIdentity, {
             resolveUserDataPath: Effect.succeed("/isolated/userdata"),
             configure: record("identity"),

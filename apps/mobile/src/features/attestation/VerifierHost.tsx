@@ -256,11 +256,9 @@ export function VerifierHost() {
           },
           authenticate: async (reason, review) => {
             authenticating = review.id;
-            try {
-              return await authenticateAttestationOwner(reason);
-            } finally {
+            return authenticateAttestationOwner(reason).finally(() => {
               authenticating = undefined;
-            }
+            });
           },
           read: mobileVersionStore.read,
           write: mobileVersionStore.write,

@@ -123,6 +123,7 @@ describe("attestation status in the composer", () => {
       .element(page.getByText("TEE attestation not offered", { exact: true }))
       .toBeVisible();
     await expect.element(page.getByText("ChatGPT / OpenAI", { exact: true })).toBeVisible();
+    await page.getByText("About this check", { exact: true }).nth(1).click();
     await expect
       .element(
         page.getByText(

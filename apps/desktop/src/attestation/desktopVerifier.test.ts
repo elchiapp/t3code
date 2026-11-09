@@ -111,6 +111,21 @@ describe("desktop device verifier boundary", () => {
     });
     expect((await verify({ origin: "https://other.example" })).phase).toBe("unavailable");
     expect(reads).toBe(0);
+    const remoteOrigin = "http://100.64.0.2:3773";
+    const gate = new ClientAttestationGate(
+      verify,
+      () => 0,
+      () => 0,
+    );
+    let confirmations = 0;
+    gate.setOverrideConfirmation(async () => {
+      confirmations++;
+      return false;
+    });
+    expect((await gate.authorizeWithOverride(remoteOrigin, "mac", "tinfoil")).allowed).toBe(true);
+    expect(confirmations).toBe(0);
+    expect(gate.canSend(remoteOrigin, "tinfoil")).toBe(false);
+    expect(gate.hasOverride(remoteOrigin, "mac", "tinfoil")).toBe(false);
     let probes = 0;
     const proxyVerify = createDesktopVerifier({
       ...services(),

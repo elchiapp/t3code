@@ -37,6 +37,8 @@ export function createMobileDeviceVerifier(
   let acceptedDeadline = 0;
   let pending: Promise<AttestationStatus> | undefined;
   return async function verify(request: AttestationRequest): Promise<AttestationStatus> {
+    let environmentCovered = false;
+    let environmentKnown = false;
     const failure = (message: string): AttestationStatus => {
       accepted = undefined;
       acceptedDeadline = 0;
@@ -46,7 +48,10 @@ export function createMobileDeviceVerifier(
         message,
         verifiedAt: null,
         expiresAt: null,
-        checks: {},
+        checks:
+          environmentKnown && !environmentCovered
+            ? { environment_connection: { state: "not_configured" } }
+            : {},
         targets: {
           vmOrigin: operations.policy.environmentOrigins[0] ?? operations.policy.modelOrigin,
           proxyOrigin: operations.policy.modelOrigin,
@@ -59,7 +64,6 @@ export function createMobileDeviceVerifier(
     };
     const policy = operations.policy;
     let origin: string;
-    let environmentCovered = false;
     try {
       const url = new URL(request.origin);
       if (
@@ -71,11 +75,20 @@ export function createMobileDeviceVerifier(
         return failure("The environment must use a valid HTTP or HTTPS origin.");
       origin = url.origin;
       environmentCovered = policy.environmentOrigins.includes(origin);
+      environmentKnown = true;
       if (!environmentCovered && !policy.inferenceOrigin)
         return {
           ...failure("Attestation is not configured for this environment."),
           phase: "unavailable",
-          checks: { environment_connection: { state: "not_configured" } },
+          targets: {
+            vmOrigin: policy.environmentOrigins[0] ?? policy.modelOrigin,
+            proxyOrigin: policy.modelOrigin,
+            inferenceProviderIds: [],
+          },
+          checks: {
+            environment_connection: { state: "not_configured" },
+            inference: { state: "not_configured" },
+          },
         };
       if (
         (environmentCovered && url.protocol !== "https:") ||

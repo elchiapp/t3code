@@ -149,7 +149,7 @@ export function attestationReport(
     };
   };
   const unconfiguredEnvironment =
-    status.checks.environment_connection?.state === "not_configured" ||
+    missingAttestation(status.checks.environment_connection?.state) ||
     (!local && targets !== undefined && status.origin !== targets.vmOrigin);
   const platformRows = unconfiguredEnvironment
     ? [
@@ -159,7 +159,10 @@ export function attestationReport(
             "Environment attestation",
             "No trusted attestation verifier is configured for this environment. This is not a failed verification.",
           ),
-          result: "Not configured",
+          result:
+            status.checks.environment_connection?.state === "not_offered"
+              ? "Not offered"
+              : "Not configured",
           tone: "gray" as const,
         },
       ]

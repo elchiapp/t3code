@@ -88,6 +88,8 @@ describe("phone-side verification", () => {
     expect(result.phase).toBe("unavailable");
     expect(result.checks.environment_connection?.state).toBe("not_configured");
     expect(calls.collection).toBe(0);
+    expect(result.checks.inference?.state).toBe("not_configured");
+    expect(result.targets?.inferenceProviderIds).toEqual([]);
     const proxyFixture = fixture();
     const proxyVerifier = createMobileDeviceVerifier(
       {
@@ -124,6 +126,17 @@ describe("phone-side verification", () => {
     expect((await verify({ origin })).phase).toBe("verified");
     protectedConnection = false;
     expect((await verify({ origin })).phase).toBe("failed");
+    const remoteVerify = createMobileDeviceVerifier(
+      {
+        ...operations,
+        policy: { ...operations.policy, inferenceOrigin: "https://inference.example" },
+        transportProtected: async () => false,
+      },
+      () => 0,
+    );
+    const remote = await remoteVerify({ origin: "http://100.64.0.2:3773" });
+    expect(remote.phase).toBe("failed");
+    expect(remote.checks.environment_connection?.state).toBe("not_configured");
   });
   it("does not allow an unapproved inference release", async () => {
     const { operations } = fixture();

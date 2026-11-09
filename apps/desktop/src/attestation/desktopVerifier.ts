@@ -87,8 +87,10 @@ export function createDesktopVerifier(services: {
       if (!environmentCovered && !policy.inferenceOrigin)
         return {
           ...failure("unavailable", "Verification is not configured for this environment."),
+          targets: { ...targets, inferenceProviderIds: [] },
           checks: {
             environment_connection: { state: "not_configured" },
+            inference: { state: "not_configured" },
           },
         };
       const verifier = new URL(policy.verifierOrigin);

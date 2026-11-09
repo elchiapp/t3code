@@ -84,6 +84,25 @@ describe("composer attestation colors", () => {
     );
     expect(remoteMac.tone).toBe("yellow");
     expect(remoteMac.sections[0]?.rows[0]?.result).toBe("Not configured");
+    const unsupported = attestationReport(
+      {
+        ...full,
+        origin: "http://100.64.0.2:3773",
+        phase: "unavailable",
+        checks: {
+          environment_connection: { state: "not_offered" },
+          inference: { state: "not_configured" },
+        },
+        targets: { ...full.targets!, inferenceProviderIds: [] },
+      },
+      false,
+      "Mac",
+      { instanceId: "tinfoil", label: "Tinfoil" },
+    );
+    expect(unsupported.tone).toBe("gray");
+    expect(unsupported.actionLabel).toBeUndefined();
+    expect(unsupported.sections[0]?.rows).toHaveLength(1);
+    expect(unsupported.sections[0]?.rows[0]?.result).toBe("Not offered");
     expect(remoteMac.sections[1]?.rows).toEqual(
       expect.arrayContaining([
         expect.objectContaining({ title: "Proxy VM hardware", result: "Verified" }),

@@ -8,7 +8,8 @@ import {
 } from "@t3tools/contracts";
 import { createDeviceApprovalController } from "@t3tools/client-runtime/attestation";
 import * as Context from "effect/Context";
-import * as Crypto from "effect/Crypto";
+import * as Digest from "effect/crypto/Digest";
+import * as SecureRandom from "effect/crypto/SecureRandom";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Schema from "effect/Schema";
@@ -92,7 +93,8 @@ const make = Effect.gen(function* () {
   const context = yield* Effect.context<never>();
   const runPromise = Effect.runPromiseWith(context);
   const environment = yield* DesktopEnvironment.DesktopEnvironment;
-  const crypto = yield* Crypto.Crypto;
+  const digest = yield* Digest.Digest;
+  const random = yield* SecureRandom.SecureRandom;
   const http = yield* HttpClient.HttpClient;
   const windows = yield* ElectronWindow.ElectronWindow;
   const policyPath = environment.path.join(environment.baseDir, "attestation-client.json");
@@ -134,7 +136,7 @@ const make = Effect.gen(function* () {
       ),
     peerKey: async (origin: string) => {
       const key = await peerPublicKey(origin);
-      return Buffer.from(await runPromise(crypto.digest("SHA-256", key))).toString("hex");
+      return Buffer.from(await runPromise(digest.digest(Digest.sha256, key))).toString("hex");
     },
   };
   const runtime = createManagedVerifierRuntime({
@@ -153,7 +155,7 @@ const make = Effect.gen(function* () {
   });
   const verify = createDesktopVerifier(services);
   const verifyCertificate = createCertificateVerifier(services);
-  const newId = () => runPromise(crypto.randomUUIDv4().pipe(Effect.orDie));
+  const newId = () => runPromise(random.uuidV4());
   const store = createDesktopVersionStore(
     environment.path.join(environment.appDataDirectory, "T3 Attested", "attestation-versions.json"),
     newId,
@@ -273,10 +275,10 @@ const make = Effect.gen(function* () {
             type: "spki",
             format: "der",
           });
-          const digest = Buffer.from(await runPromise(crypto.digest("SHA-256", key))).toString(
-            "hex",
-          );
-          return verifyCertificate(request.hostname, digest, request.errorCode === 0);
+          const fingerprint = Buffer.from(
+            await runPromise(digest.digest(Digest.sha256, key)),
+          ).toString("hex");
+          return verifyCertificate(request.hostname, fingerprint, request.errorCode === 0);
         };
         void check().then(callback, () => callback(-2));
       });

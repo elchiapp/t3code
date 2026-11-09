@@ -1,4 +1,5 @@
 import * as HostProcess from "@t3tools/shared/HostProcess";
+import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, describe, it } from "@effect/vitest";
 import { ConnectionCatalogDocument } from "@t3tools/client-runtime/platform";
@@ -78,6 +79,7 @@ function layerFor(
     layerEnvironment,
     layerSafeStorage,
     NodeServices.layer,
+    NodeCrypto.layer,
     fileSystemLayer,
   );
   const layerSavedEnvironments = DesktopSavedEnvironments.layer.pipe(

@@ -33,4 +33,5 @@ it.each([
   expect(config.updates?.enabled).toBe(false);
   expect(config.extra?.eas).toBeUndefined();
   expect(config.extra?.clerk.publishableKey).toBeNull();
+  expect(config.ios?.associatedDomains).toEqual([]);
 });
